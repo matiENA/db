@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RUTEO - Dashboard Dinámico Integrado</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="navbar">
+        <div class="logo">🚚 RUTEO - Control de Operaciones Integrado</div>
+        <div class="controls">
+            <select id="fileSelect" style="padding: 6px; border-radius: 4px; margin-right: 10px; font-weight: bold;">
+ 
+                <option value="1ZAHVVzJTl7n6YebpXDxQtxiVYzs3Ymo1dC_v68_IX3A">📅 Día 15/05/2026</option>
+                <option value="10MZQZg9bXdEUIzNIwFFUO1Z_6LsDoTAjRCu3REZRX9c">📅 Día 16/05/2026</option>
+                <option value="1Ht1meaVceAnT6C_wdl01t4Eh7WjSxpExO2cyw9UOhoE">📅 Día 17/05/2026</option>
+                <option value="1Ne0st6fYtkzQ1L5CCH7bMZ-FtQbS3CQ0h-G6IefQOew">📅 Día 18/05/2026</option>
+            </select>
+
+            <span id="lastUpdate" style="font-size: 13px; font-weight: bold; color: #4ade80;">Conectando... ⏳</span>
+            <button id="btnLoad" onclick="cargarInfoIntegrada()" style="background-color: #34a853; color: white; border: none; padding: 8px 12px; cursor: pointer; border-radius: 4px; font-weight: bold; margin-left: 15px;">Refrescar</button>
+        </div>
+    </header>
+
+    <main>
+        <div id="loader" class="hidden" style="text-align: center; font-weight: bold; color: #003366; margin: 20px 0;">Procesando e integrando información... ⏳</div>
+        <div id="errorBox" class="hidden error"></div>
+        
+        <div class="table-container">
+            <table id="dataTable" class="hidden">
+                <thead>
+                    <tr id="tableHead"></tr>
+                </thead>
+                <tbody id="tableBody"></tbody>
+            </table>
+        </div>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
