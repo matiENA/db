@@ -23,7 +23,7 @@ export const getSheetData = async (req, res) => {
         // 1. Obtenemos los textos de las filas
         const rows = await sheet.getRows();
         
-        // 👇 NUEVA LÓGICA: Solo cargamos la Columna H si NO estamos leyendo el Indice
+        // 👇 Solo cargamos la Columna H si NO estamos leyendo el Indice
         const requiereColores = sheetName.toLowerCase() !== 'indice';
         
         if (requiereColores && sheet.rowCount > 0) {
@@ -70,12 +70,6 @@ export const getSheetData = async (req, res) => {
 
 export const writeTestLog = async (req, res) => {
     res.status(200).json({ message: "Log guardado" });
-};
-
-const extraerHexDeGoogle = (bg) => {
-    if (!bg) return null;
-    const toHex = (c) => Math.round((c || 0) * 255).toString(16).padStart(2, '0');
-    return `#${toHex(bg.red)}${toHex(bg.green)}${toHex(bg.blue)}`.toUpperCase();
 };
 
 // 👇 EL NUEVO MICROSERVICIO BFF (Backend For Frontend)
@@ -151,7 +145,8 @@ export const getViajesIntegradosDia = async (req, res) => {
 
                     let colorHex = null;
                     try {
-                        const bg = sheetRuteo.getCell(row.rowNumber - 1, 7).backgroundColor;
+                        const celdaH = sheetRuteo.getCell(row.rowNumber - 1, 7);
+                        const bg = celdaH.backgroundColor;
                         if (bg) {
                             colorHex = extraerHexDeGoogle(bg);
                             if (colorHex === '#FFFFFF' || colorHex === '#000000') colorHex = null;
