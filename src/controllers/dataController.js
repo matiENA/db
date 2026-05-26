@@ -72,7 +72,6 @@ export const writeTestLog = async (req, res) => {
     res.status(200).json({ message: "Log guardado" });
 };
 
-// 👇 EL NUEVO MICROSERVICIO BFF (Backend For Frontend)
 // 👇 MICROSERVICIO BFF ACTUALIZADO PARA REDISEÑO DE TARJETAS
 export const getViajesIntegradosDia = async (req, res) => {
     try {
