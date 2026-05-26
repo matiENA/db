@@ -1,6 +1,5 @@
 import { initGoogleSheets } from '../config/googleSheets.js';
 
-// Convierte el color de Google a Hexadecimal
 const extraerHexDeGoogle = (color) => {
     if (!color) return null;
     const r = Math.round((color.red || 0) * 255);
@@ -17,7 +16,7 @@ const determinarTerminal = (texto) => {
     return "Sin Terminal";
 };
 
-// 🛠️ FUNCIÓN HELPER INTERNA REUTILIZABLE: Procesa una única planilla de ruteo
+// Procesamiento de planillas con optimización de memoria
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
     
@@ -29,6 +28,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const hasH12 = !!sheetH12;
     const rowsH12 = hasH12 ? await sheetH12.getRows() : [];
 
+    // Carga de celdas por rango estricto para evitar sobrecarga en Render
     if (sheetRuteo.rowCount > 0) {
         try {
             await sheetRuteo.loadCells({
@@ -48,6 +48,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const regexFecha = /\d{1,2}\/\d{1,2}\/20\d{2}/;
     const regexHex = /^#[0-9A-Fa-f]{6}$/;
 
+    // Mapeo dinámico de nuevos encabezados
     const idxUt = headersLimpio.indexOf("N° UT") >= 0 ? headersLimpio.indexOf("N° UT") : headersLimpio.indexOf("N UT");
     const idxSemi = headersLimpio.indexOf("SEMI");
     const idxChofer = headersLimpio.indexOf("CHOFER");
@@ -59,6 +60,8 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const idxProducto = headersLimpio.indexOf("PRODUCTO") >= 0 ? headersLimpio.indexOf("PRODUCTO") : 24;
     const idxCantidad = headersLimpio.indexOf("CANTIDAD") >= 0 ? headersLimpio.indexOf("CANTIDAD") : 25;
     const idxCisternado = headersLimpio.indexOf("CISTERNADO") >= 0 ? headersLimpio.indexOf("CISTERNADO") : 29;
+    
+    // 👇 REGLA DE NEGOCIO: La columna inmediatamente anterior a DESTINO define el estado del viaje
     const idxFiltroColX = idxDestino - 1;
 
     const idxAvisoVacio = headersLimpio.indexOf("AVISO DE VACIO");
@@ -128,6 +131,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                 const colorHexA = regexHex.test(colorHexAVal) ? colorHexAVal : null;
                 const colorHexHx = regexHex.test(colorHexHxVal) ? colorHexHxVal : null;
 
+                // 👇 EVALUACIÓN OPERACIONAL: Determina si la celda de estado tiene datos (Timestamp o texto)
                 const isCompletado = idxFiltroColX >= 0 && (vals[idxFiltroColX] || "").toString().trim().length > 0;
 
                 let rawFecha = "";
@@ -198,7 +202,6 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     return viajesFinales;
 };
 
-// 1. Endpoint clásico de lectura genérica
 export const getSheetData = async (req, res) => {
     try {
         const { spreadsheetId, sheetName } = req.params;
@@ -215,7 +218,6 @@ export const getSheetData = async (req, res) => {
     }
 };
 
-// 2. Endpoint individual de un solo día
 export const getViajesIntegradosDia = async (req, res) => {
     try {
         const { spreadsheetId } = req.params;
@@ -226,7 +228,6 @@ export const getViajesIntegradosDia = async (req, res) => {
     }
 };
 
-// 3. 👇 EL NUEVO SÚPER ENDPOINT AGREGADOR (Fase de Consolidación BFF)
 export const getViajesRecientesAgregados = async (req, res) => {
     try {
         const { masterIndexSheetId } = req.params;
@@ -239,7 +240,6 @@ export const getViajesRecientesAgregados = async (req, res) => {
 
         const rowsIndice = await sheetIndice.getRows();
         
-        // Conversión segura de fecha de índice a un Long comparable
         const parseFecha = (str) => {
             try {
                 const parts = str.split("/");
@@ -262,10 +262,8 @@ export const getViajesRecientesAgregados = async (req, res) => {
         })
         .filter(d => d.sheetId.trim().length > 0)
         .sort((a, b) => parseFecha(b.fecha) - parseFecha(a.fecha))
-        // 👇 LIMITACIÓN DEL LADO DEL BACKEND: Solo procesamos los 10 días más recientes
         .slice(0, 10);
 
-        // Consultas asíncronas concurrentes a Google Sheets (ejecutadas en paralelo en el servidor)
         const promesasViajes = listaDias.map(async (dia) => {
             try {
                 return await obtenerViajesDePlanillaInterno(dia.sheetId);
@@ -278,7 +276,6 @@ export const getViajesRecientesAgregados = async (req, res) => {
         const resultados = await Promise.all(promesasViajes);
         const todosLosViajes = resultados.flat();
 
-        // Escudo anti-duplicados y ordenamiento final descendente
         const vistos = new Set();
         const viajesConsolidados = [];
         for (const v of todosLosViajes) {
