@@ -17,6 +17,7 @@ const determinarTerminal = (texto) => {
 };
 
 // Procesamiento de planillas con optimización de memoria
+// Actualización del procesador interno para evaluar la columna "VACIO"
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
     
@@ -28,7 +29,6 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const hasH12 = !!sheetH12;
     const rowsH12 = hasH12 ? await sheetH12.getRows() : [];
 
-    // Carga de celdas por rango estricto para evitar sobrecarga en Render
     if (sheetRuteo.rowCount > 0) {
         try {
             await sheetRuteo.loadCells({
@@ -48,7 +48,6 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const regexFecha = /\d{1,2}\/\d{1,2}\/20\d{2}/;
     const regexHex = /^#[0-9A-Fa-f]{6}$/;
 
-    // Mapeo dinámico de nuevos encabezados
     const idxUt = headersLimpio.indexOf("N° UT") >= 0 ? headersLimpio.indexOf("N° UT") : headersLimpio.indexOf("N UT");
     const idxSemi = headersLimpio.indexOf("SEMI");
     const idxChofer = headersLimpio.indexOf("CHOFER");
@@ -61,8 +60,8 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const idxCantidad = headersLimpio.indexOf("CANTIDAD") >= 0 ? headersLimpio.indexOf("CANTIDAD") : 25;
     const idxCisternado = headersLimpio.indexOf("CISTERNADO") >= 0 ? headersLimpio.indexOf("CISTERNADO") : 29;
     
-    // 👇 REGLA DE NEGOCIO: La columna inmediatamente anterior a DESTINO define el estado del viaje
-    const idxFiltroColX = idxDestino - 1;
+    // 👇 ACTUALIZADO: Buscamos la columna "VACIO" directamente por su nombre de encabezado en la lista limpia
+    const idxFiltroColX = headersLimpio.indexOf("VACIO");
 
     const idxAvisoVacio = headersLimpio.indexOf("AVISO DE VACIO");
     const idxLlegadaEta = headersLimpio.indexOf("LLEGADA(ETA)");
@@ -131,7 +130,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                 const colorHexA = regexHex.test(colorHexAVal) ? colorHexAVal : null;
                 const colorHexHx = regexHex.test(colorHexHxVal) ? colorHexHxVal : null;
 
-                // 👇 EVALUACIÓN OPERACIONAL: Determina si la celda de estado tiene datos (Timestamp o texto)
+                // 👇 ACTUALIZADO: Comprobamos si la columna "VACIO" tiene un valor no nulo ni vacío
                 const isCompletado = idxFiltroColX >= 0 && (vals[idxFiltroColX] || "").toString().trim().length > 0;
 
                 let rawFecha = "";
