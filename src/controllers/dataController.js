@@ -1,4 +1,24 @@
-// 👇 EXTRACCIÓN DINÁMICA CON PRINCIPIOS BFF Y TRANSPORTE DE DIRECCIÓN/VACÍO
+import { initGoogleSheets } from '../config/googleSheets.js';
+
+// Convierte de forma segura el color RGB de Google a formato hexadecimal
+const extraerHexDeGoogle = (color) => {
+    if (!color) return null;
+    const r = Math.round((color.red || 0) * 255);
+    const g = Math.round((color.green || 0) * 255);
+    const b = Math.round((color.blue || 0) * 255);
+    return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase();
+};
+
+// Clasifica las terminales operativas para la navegación móvil
+const determinarTerminal = (texto) => {
+    if (!texto) return "Sin Terminal";
+    const t = texto.toUpperCase();
+    if (t.includes("PLAZA HUINCUL") || t.includes("TPH") || t.includes("UTE")) return "Plaza Huincul";
+    if (t.includes("DOCK SUD") || t.includes("TDS")) return "Dock Sud";
+    return "Sin Terminal";
+};
+
+// 🛠️ FUNCIÓN HELPER INTERNA REUTILIZABLE: Procesa una única planilla de ruteo
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
     
@@ -10,6 +30,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const hasH12 = !!sheetH12;
     const rowsH12 = hasH12 ? await sheetH12.getRows() : [];
 
+    // Carga de celdas por rango estricto para evitar sobrecarga de memoria
     if (sheetRuteo.rowCount > 0) {
         try {
             await sheetRuteo.loadCells({
@@ -29,7 +50,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const regexFecha = /\d{1,2}\/\d{1,2}\/20\d{2}/;
     const regexHex = /^#[0-9A-Fa-f]{6}$/;
 
-    // Buscador de índices dinámicos de los nuevos encabezados
+    // Buscador de índices dinámicos de los encabezados (Gestalt)
     const idxUt = headersLimpio.indexOf("N° UT") >= 0 ? headersLimpio.indexOf("N° UT") : headersLimpio.indexOf("N UT");
     const idxSemi = headersLimpio.indexOf("SEMI");
     const idxChofer = headersLimpio.indexOf("CHOFER");
@@ -37,10 +58,10 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const idxHexA = headersLimpio.indexOf("HEXA");
     const idxHexHx = headersLimpio.indexOf("HEXHX");
     
-    // 👇 NUEVOS ENCABEZADOS REQUERIDOS
+    // Columnas operativas
     const idxNViaje = headersLimpio.indexOf("N VIAJE");
     const idxLlegadaPlanta = headersLimpio.indexOf("LLEGADA A PLANTA");
-    const idxVacio = headersLimpio.indexOf("VACIO"); // Usamos directamente "VACIO"
+    const idxVacio = headersLimpio.indexOf("VACIO"); // Encabezado de estado de vacío/finalización
     const idxDireccion = headersLimpio.indexOf("DIRECCION");
 
     const idxDestino = headersLimpio.indexOf("DESTINO");
@@ -53,6 +74,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const idxLlegada = headersLimpio.indexOf("LLEGADA");
     const limiteBusqueda = Math.max(idxAvisoVacio, idxLlegadaEta, idxLlegada, idxDestino - 6, 0);
 
+    // Mapeo rápido de filas de ruteo para asociar direcciones físicas concurrentemente
     const agrupadoRuteo = {};
     for (const row of rowsRuteo) {
         const rVals = row._rawData || [];
@@ -152,7 +174,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                 const filasH12 = agrupadoH12[tdRuteo] || [];
                 const filasRuteoDeEsteTD = agrupadoRuteo[tdRuteo] || [];
                 
-                // Mapeo dinámico de direcciones físicas para las paradas del TD
+                // Mapeo dinámico de direcciones físicas para las paradas de este TD
                 const mapaDirecciones = {};
                 filasRuteoDeEsteTD.forEach(rVals => {
                     const dest = (rVals[idxDestino] || "").toString().trim();
@@ -218,4 +240,114 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
         }
     }
     return viajesFinales;
+};
+
+// =================================================================================================
+// 👇 EXPORTS COMPLETOS REQUERIDOS POR EL ENRUTADOR (dataRoutes.js)
+// =================================================================================================
+
+// 1. Lectura clásica de planillas genéricas
+export const getSheetData = async (req, res) => {
+    try {
+        const { spreadsheetId, sheetName } = req.params;
+        const doc = await initGoogleSheets(spreadsheetId);
+        const sheet = doc.sheetsByTitle[sheetName];
+        if (!sheet) return res.status(404).json({ success: false, error: `La pestaña '${sheetName}' no existe.` });
+
+        const rows = await sheet.getRows();
+        const data = rows.map(row => [...(row._rawData || [])]);
+
+        res.status(200).json({ success: true, headers: sheet.headerValues || [], data: data });
+    } catch (error) {
+        console.error("❌ ERROR LEYENDO PESTAÑA:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+// 2. Extracción consolidada individual de un día
+export const getViajesIntegradosDia = async (req, res) => {
+    try {
+        const { spreadsheetId } = req.params;
+        const viajes = await obtenerViajesDePlanillaInterno(spreadsheetId);
+        res.status(200).json({ success: true, data: viajes });
+    } catch (error) {
+        console.error("❌ ERROR INTEGRANDO VIAJES INDIVIDUALES:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+// 3. Agregador BFF de los últimos 10 días desde el índice
+export const getViajesRecientesAgregados = async (req, res) => {
+    try {
+        const { masterIndexSheetId } = req.params;
+        const docMaster = await initGoogleSheets(masterIndexSheetId);
+        const sheetIndice = docMaster.sheetsByTitle['Indice'];
+        
+        if (!sheetIndice) {
+            return res.status(404).json({ success: false, error: "No se encontró la pestaña 'Indice' en la planilla maestra." });
+        }
+
+        const rowsIndice = await sheetIndice.getRows();
+        
+        const parseFecha = (str) => {
+            try {
+                const parts = str.split("/");
+                if (parts.length === 3) {
+                    const d = parts[0].padStart(2, '0');
+                    const m = parts[1].padStart(2, '0');
+                    const y = parts[2].split(" ")[0].trim();
+                    return parseInt(`${y}${m}${d}`, 10);
+                }
+            } catch (e) {}
+            return 0;
+        };
+
+        const listaDias = rowsIndice.map(row => {
+            const vals = row._rawData || [];
+            return {
+                fecha: vals[0] || "Sin fecha",
+                sheetId: vals[1] || ""
+            };
+        })
+        .filter(d => d.sheetId.trim().length > 0)
+        .sort((a, b) => parseFecha(b.fecha) - parseFecha(a.fecha))
+        .slice(0, 10);
+
+        const promesasViajes = listaDias.map(async (dia) => {
+            try {
+                return await obtenerViajesDePlanillaInterno(dia.sheetId);
+            } catch (err) {
+                console.error(`Error procesando planilla ID ${dia.sheetId}:`, err.message);
+                return [];
+            }
+        });
+
+        const resultados = await Promise.all(promesasViajes);
+        const todosLosViajes = resultados.flat();
+
+        const vistos = new Set();
+        const viajesConsolidados = [];
+        for (const v of todosLosViajes) {
+            if (!vistos.has(v.idUnico)) {
+                vistos.add(v.idUnico);
+                viajesConsolidados.push(v);
+            }
+        }
+        
+        viajesConsolidados.sort((a, b) => parseFecha(b.fechaPlanificada) - parseFecha(a.fechaPlanificada));
+
+        res.status(200).json({
+            success: true,
+            diasDisponibles: listaDias,
+            data: viajesConsolidados
+        });
+    } catch (error) {
+        console.error("❌ ERROR EN EL AGREGADOR BFF:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+// 4. Log de pruebas
+export const writeTestLog = async (req, res) => {
+    res.status(200).json({ message: "Log guardado" });
 };
