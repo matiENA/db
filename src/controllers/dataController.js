@@ -16,8 +16,7 @@ const determinarTerminal = (texto) => {
     return "Sin Terminal";
 };
 
-// Procesamiento de planillas con optimización de memoria
-// Actualización del procesador interno para evaluar la columna "VACIO"
+// 👇 NUEVA FUNCIÓN DE EXTRACCIÓN CON SOPORTE DE DIRECCIONES Y LLEGADAS
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
     
@@ -48,28 +47,46 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const regexFecha = /\d{1,2}\/\d{1,2}\/20\d{2}/;
     const regexHex = /^#[0-9A-Fa-f]{6}$/;
 
+    // Índices dinámicos clásicos y nuevos
     const idxUt = headersLimpio.indexOf("N° UT") >= 0 ? headersLimpio.indexOf("N° UT") : headersLimpio.indexOf("N UT");
     const idxSemi = headersLimpio.indexOf("SEMI");
     const idxChofer = headersLimpio.indexOf("CHOFER");
     const idxTracking = headersLimpio.indexOf("TRACKING");
     const idxHexA = headersLimpio.indexOf("HEXA");
     const idxHexHx = headersLimpio.indexOf("HEXHX");
+    const idxFiltroColX = headersLimpio.indexOf("VACIO");
+
+    // 👇 NUEVOS ENCABEZADOS EN EL SHEET
+    const idxNViaje = headersLimpio.indexOf("N VIAJE");
+    const idxLlegadaPlanta = headersLimpio.indexOf("LLEGADA A PLANTA");
+    const idxDireccion = headersLimpio.indexOf("DIRECCION") >= 0 
+        ? headersLimpio.indexOf("DIRECCION") 
+        : (idxHexA >= 0 ? idxHexA + 1 : -1); // Fallback: si no hay cabecera dirección, es el índice posterior a HEXA
 
     const idxDestino = headersLimpio.indexOf("DESTINO");
     const idxProducto = headersLimpio.indexOf("PRODUCTO") >= 0 ? headersLimpio.indexOf("PRODUCTO") : 24;
     const idxCantidad = headersLimpio.indexOf("CANTIDAD") >= 0 ? headersLimpio.indexOf("CANTIDAD") : 25;
     const idxCisternado = headersLimpio.indexOf("CISTERNADO") >= 0 ? headersLimpio.indexOf("CISTERNADO") : 29;
-    
-    // 👇 ACTUALIZADO: Buscamos la columna "VACIO" directamente por su nombre de encabezado en la lista limpia
-    const idxFiltroColX = headersLimpio.indexOf("VACIO");
 
     const idxAvisoVacio = headersLimpio.indexOf("AVISO DE VACIO");
     const idxLlegadaEta = headersLimpio.indexOf("LLEGADA(ETA)");
     const idxLlegada = headersLimpio.indexOf("LLEGADA");
     const limiteBusqueda = Math.max(idxAvisoVacio, idxLlegadaEta, idxLlegada, idxDestino - 6, 0);
 
+    // Mapeo rápido de filas de ruteo para asociar direcciones físicas concurrentemente
+    const agrupadoRuteo = {};
+    for (const row of rowsRuteo) {
+        const rVals = row._rawData || [];
+        const rTdMatch = rVals.find(v => regexTD.test((v || "").toString().trim()));
+        const rTd = rTdMatch ? rTdMatch.toString().trim() : "";
+        if (rTd) {
+            if (!agrupadoRuteo[rTd]) agrupadoRuteo[rTd] = [];
+            agrupadoRuteo[rTd].push(rVals);
+        }
+    }
+
     const agrupadoH12 = {};
-    for (let row of rowsH12) {
+    for (const row of rowsH12) {
         const vals = row._rawData || [];
         const tdMatch = vals.find(v => regexTD.test((v || "").toString().trim()));
         const td = tdMatch ? tdMatch.toString().trim() : (vals[5] || "").toString().trim();
@@ -130,8 +147,12 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                 const colorHexA = regexHex.test(colorHexAVal) ? colorHexAVal : null;
                 const colorHexHx = regexHex.test(colorHexHxVal) ? colorHexHxVal : null;
 
-                // 👇 ACTUALIZADO: Comprobamos si la columna "VACIO" tiene un valor no nulo ni vacío
                 const isCompletado = idxFiltroColX >= 0 && (vals[idxFiltroColX] || "").toString().trim().length > 0;
+
+                // 👇 EXTRACCIÓN DE NUEVOS CAMPOS DEL EXCEL
+                const nViaje = idxNViaje >= 0 ? (vals[idxNViaje] || "").toString().trim() : "";
+                const llegadaPlanta = idxLlegadaPlanta >= 0 ? (vals[idxLlegadaPlanta] || "").toString().trim() : "";
+                const horarioVacio = idxFiltroColX >= 0 ? (vals[idxFiltroColX] || "").toString().trim() : "";
 
                 let rawFecha = "";
                 if (idxDestino > 0) {
@@ -149,6 +170,16 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                 const fechaLimpia = rawFecha.split(" ")[0] || "Sin Fecha";
 
                 const filasH12 = agrupadoH12[tdRuteo] || [];
+                const filasRuteoDeEsteTD = agrupadoRuteo[tdRuteo] || [];
+                
+                // Mapa local de direcciones para asociar las paradas de la Hoja 12
+                const mapaDirecciones = {};
+                filasRuteoDeEsteTD.forEach(rVals => {
+                    const dest = (rVals[idxDestino] || "").toString().trim();
+                    const addr = idxDireccion >= 0 ? (rVals[idxDireccion] || "").toString().trim() : "";
+                    if (dest) mapaDirecciones[dest] = addr;
+                });
+
                 const paradas = [];
                 let terminalLimpia = "Sin Terminal";
                 let cisternadoReal = vals[idxCisternado] || "";
@@ -159,22 +190,27 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                     cisternadoReal = filasH12[0][13] || cisternadoReal;
 
                     for (let f12 of filasH12) {
+                        const destH12 = f12[7] || "Sin Destino";
+                        const dir = mapaDirecciones[destH12] || ""; // Match de dirección desde Ruteo
                         paradas.push({
-                            destino: f12[7] || "Sin Destino",
+                            destino: destH12,
                             producto: f12[8] || "",
                             cantidad: f12[9] || "",
-                            cisternado: f12[10] || ""
+                            cisternado: f12[10] || "",
+                            direccion: dir
                         });
                     }
                 } else {
                     const textoRuteo = vals.join(" ").toUpperCase();
                     terminalLimpia = determinarTerminal(textoRuteo);
+                    const dir = idxDireccion >= 0 ? (vals[idxDireccion] || "").toString().trim() : "";
 
                     paradas.push({
                         destino: vals[idxDestino >= 0 ? idxDestino : 23] || "Validar Destino",
                         producto: vals[idxProducto] || "",
                         cantidad: vals[idxCantidad] || "",
-                        cisternado: ""
+                        cisternado: "",
+                        direccion: dir
                     });
                 }
 
@@ -193,7 +229,11 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                     chofer: chofer,
                     ultimoTracking: ultimoTracking,
                     colorHexA: colorHexA,
-                    colorHexHx: colorHexHx
+                    colorHexHx: colorHexHx,
+                    // 👇 Nuevos campos mapeados en la respuesta JSON
+                    nViaje: nViaje,
+                    llegadaPlanta: llegadaPlanta,
+                    horarioVacio: horarioVacio
                 });
             }
         }
