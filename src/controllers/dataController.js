@@ -1,292 +1,12 @@
-import { initGoogleSheets } from '../config/googleSheets.js';
-
-// Convierte de forma segura el color RGB de Google a formato hexadecimal [txt]
-const extraerHexDeGoogle = (color) => {
-    if (!color) return null;
-    const r = Math.round((color.red || 0) * 255);
-    const g = Math.round((color.green || 0) * 255);
-    const b = Math.round((color.blue || 0) * 255);
-    return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase();
-};
-
-// Clasifica las terminales operativas para la navegación móvil [txt]
-const determinarTerminal = (texto) => {
-    if (!texto) return "Sin Terminal";
-    const t = texto.toUpperCase();
-    if (t.includes("PLAZA HUINCUL") || t.includes("TPH") || t.includes("UTE")) return "Plaza Huincul";
-    if (t.includes("DOCK SUD") || t.includes("TDS")) return "Dock Sud";
-    return "Sin Terminal";
-};
-
-// 🛠️ FUNCIÓN HELPER INTERNA REUTILIZABLE: Procesa una única planilla de ruteo
-const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
-    const doc = await initGoogleSheets(spreadsheetId);
-    
-    const sheetRuteo = doc.sheetsByTitle['Ruteo'];
-    const sheetH12 = doc.sheetsByTitle['Hoja 12'];
-    
-    if (!sheetRuteo) return [];
-
-    const hasH12 = !!sheetH12;
-    const rowsH12 = hasH12 ? await sheetH12.getRows() : [];
-
-    // Carga de celdas por rango estricto para evitar sobrecarga de memoria [txt]
-    if (sheetRuteo.rowCount > 0) {
-        try {
-            await sheetRuteo.loadCells({
-                startRowIndex: 0,
-                endRowIndex: sheetRuteo.rowCount,
-                startColumnIndex: 7,
-                endColumnIndex: 8
-            });
-        } catch (e) {}
-    }
-
-    const rowsRuteo = await sheetRuteo.getRows();
-    const headersRuteo = sheetRuteo.headerValues || [];
-    const headersLimpio = headersRuteo.map(h => (h || "").toString().trim().toUpperCase());
-    
-    const regexTD = /^\d{7}$/;
-    const regexFecha = /\d{1,2}\/\d{1,2}\/20\d{2}/;
-    const regexHex = /^#[0-9A-Fa-f]{6}$/;
-
-    // Buscador de índices dinámicos de los encabezados (Gestalt) [txt]
-    const idxUt = headersLimpio.indexOf("N° UT") >= 0 ? headersLimpio.indexOf("N° UT") : headersLimpio.indexOf("N UT");
-    const idxSemi = headersLimpio.indexOf("SEMI");
-    const idxChofer = headersLimpio.indexOf("CHOFER");
-    const idxTracking = headersLimpio.indexOf("TRACKING");
-    const idxHexA = headersLimpio.indexOf("HEXA");
-    const idxHexHx = headersLimpio.indexOf("HEXHX");
-    
-    // Columnas operativas
-    const idxNViaje = headersLimpio.indexOf("N VIAJE");
-    const idxLlegadaPlanta = headersLimpio.indexOf("LLEGADA A PLANTA");
-    const idxVacio = headersLimpio.indexOf("VACIO"); // Encabezado de estado de vacío/finalización [txt]
-    const idxDireccion = headersLimpio.indexOf("DIRECCION");
-    const idxEstadoUt = headersLimpio.indexOf("ESTADOUT"); // 👇 NUEVO: Columna de estado para notificaciones [txt]
-
-    const idxDestino = headersLimpio.indexOf("DESTINO");
-    const idxProducto = headersLimpio.indexOf("PRODUCTO") >= 0 ? headersLimpio.indexOf("PRODUCTO") : 24;
-    const idxCantidad = headersLimpio.indexOf("CANTIDAD") >= 0 ? headersLimpio.indexOf("CANTIDAD") : 25;
-    const idxCisternado = headersLimpio.indexOf("CISTERNADO") >= 0 ? headersLimpio.indexOf("CISTERNADO") : 29;
-
-    const idxAvisoVacio = headersLimpio.indexOf("AVISO DE VACIO");
-    const idxLlegadaEta = headersLimpio.indexOf("LLEGADA(ETA)");
-    const idxLlegada = headersLimpio.indexOf("LLEGADA");
-    const limiteBusqueda = Math.max(idxAvisoVacio, idxLlegadaEta, idxLlegada, idxDestino - 6, 0);
-
-    // Mapeo rápido de filas de ruteo para asociar direcciones físicas concurrentemente
-    const agrupadoRuteo = {};
-    for (const row of rowsRuteo) {
-        const rVals = row._rawData || [];
-        const rTdMatch = rVals.find(v => regexTD.test((v || "").toString().trim()));
-        const rTd = rTdMatch ? rTdMatch.toString().trim() : "";
-        if (rTd) {
-            if (!agrupadoRuteo[rTd]) agrupadoRuteo[rTd] = [];
-            agrupadoRuteo[rTd].push(rVals);
-        }
-    }
-
-    const agrupadoH12 = {};
-    for (const row of rowsH12) {
-        const vals = row._rawData || [];
-        const tdMatch = vals.find(v => regexTD.test((v || "").toString().trim()));
-        const td = tdMatch ? tdMatch.toString().trim() : (vals[5] || "").toString().trim();
-        
-        if (td) {
-            if (!agrupadoH12[td]) agrupadoH12[td] = [];
-            agrupadoH12[td].push(vals);
-        }
-    }
-
-    const viajesFinales = [];
-    const procesados = new Set();
-
-    for (let i = 0; i < rowsRuteo.length; i++) {
-        const row = rowsRuteo[i];
-        const vals = row._rawData || [];
-        if (vals.length === 0) continue;
-
-        const trRuteo = (vals[0] || "").toString().trim();
-        const tdMatch = vals.find(v => regexTD.test((v || "").toString().trim()));
-        const tdRuteo = tdMatch ? tdMatch.toString().trim() : "";
-
-        const isTractorValido = trRuteo.length > 0 && 
-                              trRuteo.length <= 12 && 
-                              !trRuteo.toUpperCase().includes("TERMINAL") &&
-                              !trRuteo.toUpperCase().includes("FECHA") &&
-                              !trRuteo.toUpperCase().includes("PRODUCTO") &&
-                              !trRuteo.startsWith("#") &&
-                              !trRuteo.startsWith(",");
-
-        const isTdValido = tdRuteo.length > 0;
-
-        if (isTractorValido || isTdValido) {
-            const keyMerge = tdRuteo ? tdRuteo.trim() : `FALLBACK_${spreadsheetId.substring(0, 8)}_${i}`;
-            
-            if (!procesados.has(keyMerge)) {
-                procesados.add(keyMerge);
-
-                let colorHexLegacy = null;
-                try {
-                    const bg = sheetRuteo.getCell(row.rowNumber - 1, 7).backgroundColor;
-                    if (bg) {
-                        colorHexLegacy = extraerHexDeGoogle(bg);
-                        if (colorHexLegacy === '#FFFFFF' || colorHexLegacy === '#000000') colorHexLegacy = null;
-                    }
-                } catch (e) {}
-
-                const numeroUt = idxUt >= 0 ? (vals[idxUt] || "").toString().trim() : "";
-                const semi = idxSemi >= 0 ? (vals[idxSemi] || "").toString().trim() : "";
-                const chofer = idxChofer >= 0 ? (vals[idxChofer] || "").toString().trim() : "";
-                
-                const rawTracking = idxTracking >= 0 ? (vals[idxTracking] || "").toString().trim() : "";
-                const ultimoTracking = rawTracking ? rawTracking.split('/')[0].trim() : "";
-
-                const colorHexAVal = idxHexA >= 0 ? (vals[idxHexA] || "").toString().trim() : "";
-                const colorHexHxVal = idxHexHx >= 0 ? (vals[idxHexHx] || "").toString().trim() : "";
-
-                const colorHexA = regexHex.test(colorHexAVal) ? colorHexAVal : null;
-                const colorHexHx = regexHex.test(colorHexHxVal) ? colorHexHxVal : null;
-
-                // Extraemos las nuevas columnas de forma dinámica
-                const nViaje = idxNViaje >= 0 ? (vals[idxNViaje] || "").toString().trim() : "";
-                const llegadaPlanta = idxLlegadaPlanta >= 0 ? (vals[idxLlegadaPlanta] || "").toString().trim() : "";
-                const horarioVacio = idxVacio >= 0 ? (vals[idxVacio] || "").toString().trim() : "";
-
-                // Determina la finalización analizando si la columna VACIO tiene contenido [txt]
-                const isCompletado = idxVacio >= 0 && (vals[idxVacio] || "").toString().trim().length > 0;
-
-                // 👇 NUEVO: Mapeo y normalización del estado UT para el sistema de alertas móviles [txt]
-                let estadoUt = idxEstadoUt >= 0 ? (vals[idxEstadoUt] || "").toString().trim() : "";
-                if (isCompletado) {
-                    estadoUt = "VACIO";
-                }
-
-                let rawFecha = "";
-                if (idxDestino > 0) {
-                    for (let j = idxDestino - 1; j > limiteBusqueda; j--) {
-                        const valText = (vals[j] || "").toString();
-                        if (regexFecha.test(valText)) {
-                            rawFecha = valText;
-                            break;
-                        }
-                    }
-                }
-                if (!rawFecha && headersLimpio.indexOf("FECHA PLANIFICADA") >= 0) {
-                    rawFecha = vals[headersLimpio.indexOf("FECHA PLANIFICADA")] || "";
-                }
-                const fechaLimpia = rawFecha.split(" ")[0] || "Sin Fecha";
-
-                const filasH12 = agrupadoH12[tdRuteo] || [];
-                const filasRuteoDeEsteTD = agrupadoRuteo[tdRuteo] || [];
-                
-                // Mapeo dinámico de direcciones físicas para las paradas de este TD [txt]
-                const mapaDirecciones = {};
-                filasRuteoDeEsteTD.forEach(rVals => {
-                    const dest = (rVals[idxDestino] || "").toString().trim();
-                    const addr = idxDireccion >= 0 ? (rVals[idxDireccion] || "").toString().trim() : "";
-                    if (dest) mapaDirecciones[dest] = addr;
-                });
-
-                const paradas = [];
-                let terminalLimpia = "Sin Terminal";
-                let cisternadoReal = vals[idxCisternado] || "";
-
-                if (filasH12.length > 0) {
-                    const textoCompleto = filasH12[0].join(" ").toUpperCase();
-                    terminalLimpia = determinarTerminal(textoCompleto);
-                    cisternadoReal = filasH12[0][13] || cisternadoReal;
-
-                    for (let f12 of filasH12) {
-                        const destH12 = f12[7] || "Sin Destino";
-                        const dir = mapaDirecciones[destH12] || ""; 
-                        paradas.push({
-                            destino: destH12,
-                            producto: f12[8] || "",
-                            cantidad: f12[9] || "",
-                            cisternado: f12[10] || "",
-                            direccion: dir
-                        });
-                    }
-                } else {
-                    const textoRuteo = vals.join(" ").toUpperCase();
-                    terminalLimpia = determinarTerminal(textoRuteo);
-                    const dir = idxDireccion >= 0 ? (vals[idxDireccion] || "").toString().trim() : "";
-
-                    paradas.push({
-                        destino: vals[idxDestino >= 0 ? idxDestino : 23] || "Validar Destino",
-                        producto: vals[idxProducto] || "",
-                        cantidad: vals[idxCantidad] || "",
-                        cisternado: "",
-                        direccion: dir
-                    });
-                }
-
-                viajesFinales.push({
-                    idUnico: keyMerge,
-                    tractor: trRuteo,
-                    numDespacho: tdRuteo,
-                    terminalOrigen: terminalLimpia,
-                    fechaPlanificada: fechaLimpia,
-                    cisternadoReal: cisternadoReal,
-                    colorHex: colorHexLegacy,
-                    isCompletado: isCompletado,
-                    paradas: paradas,
-                    numeroUt: numeroUt,
-                    semi: semi,
-                    chofer: chofer,
-                    ultimoTracking: ultimoTracking,
-                    colorHexA: colorHexA,
-                    colorHexHx: colorHexHx,
-                    nViaje: nViaje,
-                    llegadaPlanta: llegadaPlanta,
-                    horarioVacio: horarioVacio,
-                    estadoUt: estadoUt // Transmitido en el payload unificado
-                });
-            }
-        }
-    }
-    return viajesFinales;
-};
-
-// =================================================================================================
-// 👇 EXPORTS COMPLETOS REQUERIDOS POR EL ENRUTADOR (dataRoutes.js)
-// =================================================================================================
-
-// 1. Lectura clásica de planillas genéricas
-export const getSheetData = async (req, res) => {
-    try {
-        const { spreadsheetId, sheetName } = req.params;
-        const doc = await initGoogleSheets(spreadsheetId);
-        const sheet = doc.sheetsByTitle[sheetName];
-        if (!sheet) return res.status(404).json({ success: false, error: `La pestaña '${sheetName}' no existe.` });
-
-        const rows = await sheet.getRows();
-        const data = rows.map(row => [...(row._rawData || [])]);
-
-        res.status(200).json({ success: true, headers: sheet.headerValues || [], data: data });
-    } catch (error) {
-        console.error("❌ ERROR LEYENDO PESTAÑA:", error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-};
-
-// 2. Extracción consolidada individual de un día
-export const getViajesIntegradosDia = async (req, res) => {
-    try {
-        const { spreadsheetId } = req.params;
-        const viajes = await obtenerViajesDePlanillaInterno(spreadsheetId);
-        res.status(200).json({ success: true, data: viajes });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-};
-
-// 3. Agregador BFF de los últimos 10 días desde el índice [txt]
+// 👇 EXPORT AGREGADOR CON FILTRADO DINÁMICO DE CARGA PROGRESIVA (LAZY FETCHING) [txt]
 export const getViajesRecientesAgregados = async (req, res) => {
     try {
         const { masterIndexSheetId } = req.params;
+        
+        // Mapeo dinámico del query parameter de límites
+        const limitParam = parseInt(req.query.limit, 10);
+        const limit = !isNaN(limitParam) && limitParam > 0 ? limitParam : 10;
+
         const docMaster = await initGoogleSheets(masterIndexSheetId);
         const sheetIndice = docMaster.sheetsByTitle['Indice'];
         
@@ -309,7 +29,8 @@ export const getViajesRecientesAgregados = async (req, res) => {
             return 0;
         };
 
-        const listaDias = rowsIndice.map(row => {
+        // 👇 MANTENER ARQUITECTURA CRÍTICA: Extrae la Columna B (sheetId) de forma normal [txt]
+        const listaDiasCompleta = rowsIndice.map(row => {
             const vals = row._rawData || [];
             return {
                 fecha: vals[0] || "Sin fecha",
@@ -317,10 +38,13 @@ export const getViajesRecientesAgregados = async (req, res) => {
             };
         })
         .filter(d => d.sheetId.trim().length > 0)
-        .sort((a, b) => parseFecha(b.fecha) - parseFecha(a.fecha))
-        .slice(0, 10);
+        .sort((a, b) => parseFecha(b.fecha) - parseFecha(a.fecha));
 
-        const promesasViajes = listaDias.map(async (dia) => {
+        // 👇 LAZY FETCHING: Corte y delimitación dinámico en el backend [txt]
+        const listaDiasLimitada = listaDiasCompleta.slice(0, limit);
+
+        // Procesamiento en paralelo de los días delimitados
+        const promesasViajes = listaDiasLimitada.map(async (dia) => {
             try {
                 return await obtenerViajesDePlanillaInterno(dia.sheetId);
             } catch (err) {
@@ -345,16 +69,11 @@ export const getViajesRecientesAgregados = async (req, res) => {
 
         res.status(200).json({
             success: true,
-            diasDisponibles: listaDias,
+            diasDisponibles: listaDiasLimitada,
             data: viajesConsolidados
         });
     } catch (error) {
-        console.error("❌ ERROR EN EL AGREGADOR BFF:", error);
+        console.error("❌ ERROR EN EL AGREGADOR BFF CON LIMIT:", error);
         res.status(500).json({ success: false, error: error.message });
     }
-};
-
-// 4. Log de pruebas
-export const writeTestLog = async (req, res) => {
-    res.status(200).json({ message: "Log guardado" });
 };
