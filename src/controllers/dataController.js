@@ -1,11 +1,14 @@
 import { initGoogleSheets } from '../config/googleSheets.js';
 
-// 👇 REQUERIMIENTO 1: Inicialización de la Caché en Memoria del BFF [txt]
+// 👇 REQUERIMIENTO 1: Inicialización de la Caché Global en Memoria del BFF [txt]
 let cacheViajesConsolidados = [];
 let cacheDiasDisponibles = [];
 let lastSyncTime = null;
 
 const masterIndexSheetId = "1ny9yOftgyYWfzJFpQ9h8l2T_owDlyMV_HdEgeQ5Gm8E";
+
+// 👇 REQUERIMIENTO 2: Función helper asíncrona de retraso (Sleep/Throttling) [txt]
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // Convierte de forma segura el color RGB de Google a formato hexadecimal
 const extraerHexDeGoogle = (color) => {
@@ -25,7 +28,7 @@ const determinarTerminal = (texto) => {
     return "Sin Terminal";
 };
 
-// Función interna de procesamiento de planillas
+// Función interna de procesamiento de planillas individuales
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
     
@@ -203,6 +206,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                         paradas.push({
                             destino: destH12,
                             producto: f12[8] || "",
+                            amount: f12[9] || "",
                             cantidad: f12[9] || "",
                             cisternado: f12[10] || "",
                             direccion: dir
@@ -216,6 +220,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                     paradas.push({
                         destino: vals[idxDestino >= 0 ? idxDestino : 23] || "Validar Destino",
                         producto: vals[idxProducto] || "",
+                        amount: vals[idxCantidad] || "",
                         cantidad: vals[idxCantidad] || "",
                         cisternado: "",
                         direccion: dir
@@ -249,9 +254,11 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     return viajesFinales;
 };
 
-// 👇 REQUERIMIENTO 1: Sincronizador en segundo plano e Inyección del Interval [txt]
+// 3. 👇 REQUERIMIENTO 3: Sincronización en segundo plano con Throttling Secuencial (Sin Promise.all) [txt]
 export const sincronizarDatosGoogleSheets = async () => {
     try {
+        console.log("[BFF] 🔄 Iniciando ciclo de sincronización secuencial de Google Sheets...");
+        
         const docMaster = await initGoogleSheets(masterIndexSheetId);
         const sheetIndice = docMaster.sheetsByTitle['Indice'];
         
@@ -275,7 +282,7 @@ export const sincronizarDatosGoogleSheets = async () => {
             return 0;
         };
 
-        // 👇 MANTENER ARQUITECTURA CRÍTICA: Se lee la columna B de forma íntegra [txt]
+        // Mantenemos la lectura íntegra de la columna B del Indice [txt]
         const listaDiasCompleta = rowsIndice.map(row => {
             const vals = row._rawData || [];
             return {
@@ -289,16 +296,23 @@ export const sincronizarDatosGoogleSheets = async () => {
         // Consolidamos los 10 días históricos
         const listaDiasLimitada = listaDiasCompleta.slice(0, 10);
 
-        const promesasViajes = listaDiasLimitada.map(async (dia) => {
+        const resultados = [];
+        
+        // 👇 SOLUCIÓN: Iteración SECUENCIAL controlada para proteger la cuota de la API (Evita 429) [txt]
+        for (let j = 0; j < listaDiasLimitada.length; j++) {
+            const dia = listaDiasLimitada[j];
             try {
-                return await obtenerViajesDePlanillaInterno(dia.sheetId);
+                console.log(`[BFF] Descargando secuencialmente día ${j + 1}/10: ${dia.fecha} (${dia.sheetId})...`);
+                const viajesDia = await obtenerViajesDePlanillaInterno(dia.sheetId);
+                resultados.push(viajesDia);
+                
+                // 👇 Retraso activo de 1500ms entre planillas para dar respiro a la cuota [txt]
+                await delay(1500); 
             } catch (err) {
-                console.error(`Sincronizador: Error procesando planilla ID ${dia.sheetId}:`, err.message);
-                return [];
+                console.error(`[BFF ERROR] Falló la descarga del archivo día ${dia.fecha}:`, err.message);
             }
-        });
+        }
 
-        const resultados = await Promise.all(promesasViajes);
         const todosLosViajes = resultados.flat();
 
         const vistos = new Set();
@@ -312,25 +326,26 @@ export const sincronizarDatosGoogleSheets = async () => {
         
         viajesConsolidados.sort((a, b) => parseFecha(b.fechaPlanificada) - parseFecha(a.fechaPlanificada));
 
-        // 👇 Actualización atómica de la caché en memoria RAM [txt]
+        // 👇 ACTUALIZACIÓN ATÓMICA: Se pisa la caché en memoria RAM solo si el bucle terminó con éxito [txt]
         cacheViajesConsolidados = viajesConsolidados;
         cacheDiasDisponibles = listaDiasLimitada;
         lastSyncTime = new Date();
 
-        console.log(`[BFF CACHE] ✅ Sincronización exitosa: ${cacheViajesConsolidados.length} viajes consolidados en memoria.`);
+        console.log(`[BFF CACHE] ✅ Sincronización finalizada: ${cacheViajesConsolidados.length} viajes listos en memoria.`);
     } catch (error) {
-        console.error("❌ ERROR DURANTE LA SINCRONIZACIÓN ASÍNCRONA DEL BFF:", error);
+        // 👇 TOLERANCIA A FALLAS: Si un ciclo falla por rate-limiting o timeout, NO se borra la caché existente [txt]
+        console.error("❌ ERROR CRÍTICO EN TRABAJO DE SEGUNDO PLANO DEL BFF. SE CONSERVA LA CACHÉ ANTERIOR:", error.message);
     }
 };
 
-// Iniciar primera carga asíncrona de caché de forma diferida (1s tras levantar el servidor) [txt]
+// 👇 REQUERIMIENTO 4: Arranque diferido de la caché (1s tras levantar Node) y Worker de 60s [txt]
 setTimeout(() => {
-    console.log("🚀 Levantando primera carga del caché BFF en memoria...");
+    console.log("🚀 Iniciando primera carga del caché BFF en memoria (Modo Throttling)...");
     sincronizarDatosGoogleSheets();
 }, 1000);
 
-// Ejecución periódica asíncrona cada 30 segundos (Cron Job en segundo plano) [txt]
-setInterval(sincronizarDatosGoogleSheets, 30000);
+// Ejecución periódica asíncrona de sincronización cada 60 segundos [txt]
+setInterval(sincronizarDatosGoogleSheets, 60000);
 
 
 // =================================================================================================
@@ -367,9 +382,18 @@ export const getViajesIntegradosDia = async (req, res) => {
     }
 };
 
-// 3. 👇 NUEVO AGREGADOR BFF: Respuesta directa de caché sin golpear Google Sheets en el request [txt]
+// 3. 👇 REQUERIMIENTO 5: Endpoint inmediato libre de latencia (Responde en < 5ms) [txt]
 export const getViajesRecientesAgregados = async (req, res) => {
-    // Retorna instantáneamente (< 5ms) eliminando la latencia TTI del móvil [txt]
+    // Si la app arranca de cero y la caché aún no está poblada, devuelve status 202 con estructura vacía (Skeletons) [txt]
+    if (cacheViajesConsolidados.length === 0) {
+        return res.status(202).json({
+            success: true,
+            message: "Sincronizador inicializando caché en segundo plano.",
+            diasDisponibles: [],
+            data: []
+        });
+    }
+
     res.status(200).json({
         success: true,
         diasDisponibles: cacheDiasDisponibles,
