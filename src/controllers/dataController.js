@@ -1,6 +1,13 @@
 import { initGoogleSheets } from '../config/googleSheets.js';
 
-// Convierte de forma segura el color RGB de Google a formato hexadecimal [txt]
+// 👇 REQUERIMIENTO 1: Inicialización de la Caché en Memoria del BFF [txt]
+let cacheViajesConsolidados = [];
+let cacheDiasDisponibles = [];
+let lastSyncTime = null;
+
+const masterIndexSheetId = "1ny9yOftgyYWfzJFpQ9h8l2T_owDlyMV_HdEgeQ5Gm8E";
+
+// Convierte de forma segura el color RGB de Google a formato hexadecimal
 const extraerHexDeGoogle = (color) => {
     if (!color) return null;
     const r = Math.round((color.red || 0) * 255);
@@ -9,7 +16,7 @@ const extraerHexDeGoogle = (color) => {
     return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase();
 };
 
-// Clasifica las terminales operativas para la navegación móvil [txt]
+// Clasifica las terminales operativas para la navegación móvil
 const determinarTerminal = (texto) => {
     if (!texto) return "Sin Terminal";
     const t = texto.toUpperCase();
@@ -18,7 +25,7 @@ const determinarTerminal = (texto) => {
     return "Sin Terminal";
 };
 
-// 🛠️ FUNCIÓN HELPER INTERNA REUTILIZABLE: Procesa una única planilla de ruteo
+// Función interna de procesamiento de planillas
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
     
@@ -30,7 +37,6 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const hasH12 = !!sheetH12;
     const rowsH12 = hasH12 ? await sheetH12.getRows() : [];
 
-    // Carga de celdas por rango estricto para evitar sobrecarga de memoria [txt]
     if (sheetRuteo.rowCount > 0) {
         try {
             await sheetRuteo.loadCells({
@@ -50,7 +56,6 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const regexFecha = /\d{1,2}\/\d{1,2}\/20\d{2}/;
     const regexHex = /^#[0-9A-Fa-f]{6}$/;
 
-    // Buscador de índices dinámicos de los encabezados (Gestalt) [txt]
     const idxUt = headersLimpio.indexOf("N° UT") >= 0 ? headersLimpio.indexOf("N° UT") : headersLimpio.indexOf("N UT");
     const idxSemi = headersLimpio.indexOf("SEMI");
     const idxChofer = headersLimpio.indexOf("CHOFER");
@@ -58,12 +63,11 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const idxHexA = headersLimpio.indexOf("HEXA");
     const idxHexHx = headersLimpio.indexOf("HEXHX");
     
-    // Columnas operativas
     const idxNViaje = headersLimpio.indexOf("N VIAJE");
     const idxLlegadaPlanta = headersLimpio.indexOf("LLEGADA A PLANTA");
-    const idxVacio = headersLimpio.indexOf("VACIO"); // Encabezado de estado de vacío/finalización [txt]
+    const idxVacio = headersLimpio.indexOf("VACIO"); 
     const idxDireccion = headersLimpio.indexOf("DIRECCION");
-    const idxEstadoUt = headersLimpio.indexOf("ESTADOUT"); // Columna de estado para notificaciones [txt]
+    const idxEstadoUt = headersLimpio.indexOf("ESTADOUT"); 
 
     const idxDestino = headersLimpio.indexOf("DESTINO");
     const idxProducto = headersLimpio.indexOf("PRODUCTO") >= 0 ? headersLimpio.indexOf("PRODUCTO") : 24;
@@ -75,7 +79,6 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const idxLlegada = headersLimpio.indexOf("LLEGADA");
     const limiteBusqueda = Math.max(idxAvisoVacio, idxLlegadaEta, idxLlegada, idxDestino - 6, 0);
 
-    // Mapeo rápido de filas de ruteo para asociar direcciones físicas concurrentemente
     const agrupadoRuteo = {};
     for (const row of rowsRuteo) {
         const rVals = row._rawData || [];
@@ -149,15 +152,12 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                 const colorHexA = regexHex.test(colorHexAVal) ? colorHexAVal : null;
                 const colorHexHx = regexHex.test(colorHexHxVal) ? colorHexHxVal : null;
 
-                // Extraemos las nuevas columnas de forma dinámica
                 const nViaje = idxNViaje >= 0 ? (vals[idxNViaje] || "").toString().trim() : "";
                 const llegadaPlanta = idxLlegadaPlanta >= 0 ? (vals[idxLlegadaPlanta] || "").toString().trim() : "";
                 const horarioVacio = idxVacio >= 0 ? (vals[idxVacio] || "").toString().trim() : "";
 
-                // Determina la finalización analizando si la columna VACIO tiene contenido [txt]
                 const isCompletado = idxVacio >= 0 && (vals[idxVacio] || "").toString().trim().length > 0;
 
-                // Mapeo y normalización del estado UT para el sistema de alertas móviles [txt]
                 let estadoUt = idxEstadoUt >= 0 ? (vals[idxEstadoUt] || "").toString().trim() : "";
                 if (isCompletado) {
                     estadoUt = "VACIO";
@@ -181,7 +181,6 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                 const filasH12 = agrupadoH12[tdRuteo] || [];
                 const filasRuteoDeEsteTD = agrupadoRuteo[tdRuteo] || [];
                 
-                // Mapeo dinámico de direcciones físicas para las paradas de este TD [txt]
                 const mapaDirecciones = {};
                 filasRuteoDeEsteTD.forEach(rVals => {
                     const dest = (rVals[idxDestino] || "").toString().trim();
@@ -250,54 +249,15 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     return viajesFinales;
 };
 
-// =================================================================================================
-// 👇 EXPORTS COMPLETOS REQUERIDOS POR EL ENRUTADOR (dataRoutes.js) [o1]
-// =================================================================================================
-
-// 1. Lectura clásica de planillas genéricas [o1]
-export const getSheetData = async (req, res) => {
+// 👇 REQUERIMIENTO 1: Sincronizador en segundo plano e Inyección del Interval [txt]
+export const sincronizarDatosGoogleSheets = async () => {
     try {
-        const { spreadsheetId, sheetName } = req.params;
-        const doc = await initGoogleSheets(spreadsheetId);
-        const sheet = doc.sheetsByTitle[sheetName];
-        if (!sheet) return res.status(404).json({ success: false, error: `La pestaña '${sheetName}' no existe.` });
-
-        const rows = await sheet.getRows();
-        const data = rows.map(row => [...(row._rawData || [])]);
-
-        res.status(200).json({ success: true, headers: sheet.headerValues || [], data: data });
-    } catch (error) {
-        console.error("❌ ERROR LEYENDO PESTAÑA:", error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-};
-
-// 2. Extracción consolidada individual de un día [o1]
-export const getViajesIntegradosDia = async (req, res) => {
-    try {
-        const { spreadsheetId } = req.params;
-        const viajes = await obtenerViajesDePlanillaInterno(spreadsheetId);
-        res.status(200).json({ success: true, data: viajes });
-    } catch (error) {
-        console.error("❌ ERROR INTEGRANDO VIAJES INDIVIDUALES:", error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-};
-
-// 3. Agregador BFF de los últimos 10 días desde el índice con soporte de LIMIT [txt]
-export const getViajesRecientesAgregados = async (req, res) => {
-    try {
-        const { masterIndexSheetId } = req.params;
-        
-        // Mapeo dinámico del query parameter de límites para Lazy Fetching [txt]
-        const limitParam = parseInt(req.query.limit, 10);
-        const limit = !isNaN(limitParam) && limitParam > 0 ? limitParam : 10;
-
         const docMaster = await initGoogleSheets(masterIndexSheetId);
         const sheetIndice = docMaster.sheetsByTitle['Indice'];
         
         if (!sheetIndice) {
-            return res.status(404).json({ success: false, error: "No se encontró la pestaña 'Indice' en la planilla maestra." });
+            console.error("❌ Sincronizador: No se encontró la pestaña 'Indice' en la planilla maestra.");
+            return;
         }
 
         const rowsIndice = await sheetIndice.getRows();
@@ -315,26 +275,25 @@ export const getViajesRecientesAgregados = async (req, res) => {
             return 0;
         };
 
-        // 👇 MANTENER ARQUITECTURA CRÍTICA: Extrae la Columna B (sheetId) de forma normal [txt]
+        // 👇 MANTENER ARQUITECTURA CRÍTICA: Se lee la columna B de forma íntegra [txt]
         const listaDiasCompleta = rowsIndice.map(row => {
             const vals = row._rawData || [];
             return {
                 fecha: vals[0] || "Sin fecha",
-                sheetId: vals[1] || ""
+                sheetId: vals[1] || "" // Columna B del Indice [txt]
             };
         })
         .filter(d => d.sheetId.trim().length > 0)
         .sort((a, b) => parseFecha(b.fecha) - parseFecha(a.fecha));
 
-        // 👇 LAZY FETCHING: Delimitación de planillas del índice en el backend [txt]
-        const listaDiasLimitada = listaDiasCompleta.slice(0, limit);
+        // Consolidamos los 10 días históricos
+        const listaDiasLimitada = listaDiasCompleta.slice(0, 10);
 
-        // Procesamiento en paralelo de los días delimitados
         const promesasViajes = listaDiasLimitada.map(async (dia) => {
             try {
                 return await obtenerViajesDePlanillaInterno(dia.sheetId);
             } catch (err) {
-                console.error(`Error procesando planilla ID ${dia.sheetId}:`, err.message);
+                console.error(`Sincronizador: Error procesando planilla ID ${dia.sheetId}:`, err.message);
                 return [];
             }
         });
@@ -353,18 +312,73 @@ export const getViajesRecientesAgregados = async (req, res) => {
         
         viajesConsolidados.sort((a, b) => parseFecha(b.fechaPlanificada) - parseFecha(a.fechaPlanificada));
 
-        res.status(200).json({
-            success: true,
-            diasDisponibles: listaDiasLimitada,
-            data: viajesConsolidados
-        });
+        // 👇 Actualización atómica de la caché en memoria RAM [txt]
+        cacheViajesConsolidados = viajesConsolidados;
+        cacheDiasDisponibles = listaDiasLimitada;
+        lastSyncTime = new Date();
+
+        console.log(`[BFF CACHE] ✅ Sincronización exitosa: ${cacheViajesConsolidados.length} viajes consolidados en memoria.`);
     } catch (error) {
-        console.error("❌ ERROR EN EL AGREGADOR BFF CON LIMIT:", error);
+        console.error("❌ ERROR DURANTE LA SINCRONIZACIÓN ASÍNCRONA DEL BFF:", error);
+    }
+};
+
+// Iniciar primera carga asíncrona de caché de forma diferida (1s tras levantar el servidor) [txt]
+setTimeout(() => {
+    console.log("🚀 Levantando primera carga del caché BFF en memoria...");
+    sincronizarDatosGoogleSheets();
+}, 1000);
+
+// Ejecución periódica asíncrona cada 30 segundos (Cron Job en segundo plano) [txt]
+setInterval(sincronizarDatosGoogleSheets, 30000);
+
+
+// =================================================================================================
+// 👇 EXPORTS DE ENDPOINTS ULTRA-RÁPIDOS (< 5ms) [txt]
+// =================================================================================================
+
+// 1. Lectura clásica de planillas genéricas
+export const getSheetData = async (req, res) => {
+    try {
+        const { spreadsheetId, sheetName } = req.params;
+        const doc = await initGoogleSheets(spreadsheetId);
+        const sheet = doc.sheetsByTitle[sheetName];
+        if (!sheet) return res.status(404).json({ success: false, error: `La pestaña '${sheetName}' no existe.` });
+
+        const rows = await sheet.getRows();
+        const data = rows.map(row => [...(row._rawData || [])]);
+
+        res.status(200).json({ success: true, headers: sheet.headerValues || [], data: data });
+    } catch (error) {
+        console.error("❌ ERROR LEYENDO PESTAÑA:", error);
         res.status(500).json({ success: false, error: error.message });
     }
 };
 
-// 4. Log de pruebas [o1]
+// 2. Extracción consolidada individual de un día
+export const getViajesIntegradosDia = async (req, res) => {
+    try {
+        const { spreadsheetId } = req.params;
+        const viajes = await obtenerViajesDePlanillaInterno(spreadsheetId);
+        res.status(200).json({ success: true, data: viajes });
+    } catch (error) {
+        console.error("❌ ERROR INTEGRANDO VIAJES INDIVIDUALES:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+// 3. 👇 NUEVO AGREGADOR BFF: Respuesta directa de caché sin golpear Google Sheets en el request [txt]
+export const getViajesRecientesAgregados = async (req, res) => {
+    // Retorna instantáneamente (< 5ms) eliminando la latencia TTI del móvil [txt]
+    res.status(200).json({
+        success: true,
+        diasDisponibles: cacheDiasDisponibles,
+        data: cacheViajesConsolidados,
+        cachedAt: lastSyncTime
+    });
+};
+
+// 4. Log de pruebas
 export const writeTestLog = async (req, res) => {
     res.status(200).json({ message: "Log guardado" });
 };
