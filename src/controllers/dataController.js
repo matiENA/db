@@ -2,7 +2,7 @@ import { initGoogleSheets } from '../config/googleSheets.js';
 import admin from 'firebase-admin';
 import fs from 'fs';
 
-// 👇 CORREGIDO: Nombre de variable exacto
+// Inicialización de la Caché Global en Memoria del BFF [txt]
 let cacheViajesConsolidados = []; 
 let cacheDiasDisponibles = [];
 let lastSyncTime = null;
@@ -52,7 +52,7 @@ const enviarNotificacionPushUT = async (viaje) => {
     try {
         const topic = `ut_${viaje.numeroUt}`;
         
-       const message = {
+        const message = {
             data: {
                 idUnico: (viaje.idUnico || "").toString(),
                 tractor: (viaje.tractor || "").toString(),
@@ -71,19 +71,20 @@ const enviarNotificacionPushUT = async (viaje) => {
                 estadoUt: (viaje.estadoUt || "").toString()
             },
             topic: topic,
-            // 👇 EL BLOQUE CRÍTICO PARA DESPERTAR LA APP CERRADA 👇
+            // 👇 NUEVO: Bloque de prioridad alta para despertar la app cerrada (FCM wake-up) [txt]
             android: {
                 priority: "high"
             }
         };
 
-        try {
-            const response = await admin.messaging().send(message);
-            console.log(`📡 [PUSH] Alerta enviada con éxito al tópico [${topic}] para UT ${viaje.numeroUt}. ID:`, response);
-        } catch (error) {
-            console.error(`❌ [PUSH ERROR] Error enviando alerta para UT ${viaje.numeroUt}:`, error.message);
-        }
+        const response = await admin.messaging().send(message);
+        console.log(`📡 [PUSH] Alerta enviada con éxito al tópico [${topic}] para UT ${viaje.numeroUt}. ID:`, response);
+    } catch (error) {
+        console.error(`❌ [PUSH ERROR] Error enviando alerta para UT ${viaje.numeroUt}:`, error.message);
+    }
+}; // 👈 CORREGIDO: Cierre correcto de la llave de la función de envío [o1]
 
+// Procesamiento de planillas con optimización de memoria
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
     
