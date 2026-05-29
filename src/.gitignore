@@ -1,0 +1,19 @@
+# Dependencias de Node (¡Nunca subir esto, pesa muchísimo!)
+node_modules/
+
+# Variables de entorno
+.env
+
+# 🚨 CLAVES PRIVADAS Y CREDENCIALES (¡Prohibido subir!) 🚨
+firebase-adminsdk.json
+*service-account*.json
+credentials.json
+
+# Archivos de log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Archivos del sistema operativo (Mac/Windows)
+.DS_Store
+Thumbs.db
