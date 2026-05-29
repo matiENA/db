@@ -1,16 +1,16 @@
 import { initGoogleSheets } from '../config/googleSheets.js';
+import admin from 'firebase-admin';
+import fs from 'fs';
 
-// 👇 REQUERIMIENTO 1: Inicialización de la Caché Global en Memoria del BFF [txt]
-let cacheViajesConsolidados = [];
+// 👇 CORREGIDO: Nombre de variable exacto
+let cacheViajesConsolidados = []; 
 let cacheDiasDisponibles = [];
 let lastSyncTime = null;
 
 const masterIndexSheetId = "1ny9yOftgyYWfzJFpQ9h8l2T_owDlyMV_HdEgeQ5Gm8E";
 
-// 👇 REQUERIMIENTO 2: Función helper asíncrona de retraso (Sleep/Throttling) [txt]
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// Convierte de forma segura el color RGB de Google a formato hexadecimal
 const extraerHexDeGoogle = (color) => {
     if (!color) return null;
     const r = Math.round((color.red || 0) * 255);
@@ -19,7 +19,6 @@ const extraerHexDeGoogle = (color) => {
     return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase();
 };
 
-// Clasifica las terminales operativas para la navegación móvil
 const determinarTerminal = (texto) => {
     if (!texto) return "Sin Terminal";
     const t = texto.toUpperCase();
@@ -28,7 +27,59 @@ const determinarTerminal = (texto) => {
     return "Sin Terminal";
 };
 
-// Función interna de procesamiento de planillas individuales
+const secretsPath = '/etc/secrets/firebase-adminsdk.json';
+const localPath = './firebase-adminsdk.json';
+let firebaseInitialized = false;
+
+try {
+    const certPath = fs.existsSync(secretsPath) ? secretsPath : (fs.existsSync(localPath) ? localPath : null);
+    if (certPath) {
+        const serviceAccount = JSON.parse(fs.readFileSync(certPath, 'utf8'));
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+        firebaseInitialized = true;
+        console.log("🔥 [FIREBASE] Admin SDK inicializado exitosamente desde:", certPath);
+    } else {
+        console.warn("⚠️ [FIREBASE] Advertencia: No se encontró certificado Admin SDK. Notificaciones push desactivadas.");
+    }
+} catch (err) {
+    console.error("❌ [FIREBASE] Falló la inicialización de Firebase Admin SDK:", err.message);
+}
+
+const enviarNotificacionPushUT = async (viaje) => {
+    if (!firebaseInitialized) return;
+    try {
+        const topic = `ut_${viaje.numeroUt}`;
+        
+        const message = {
+            data: {
+                idUnico: (viaje.idUnico || "").toString(),
+                tractor: (viaje.tractor || "").toString(),
+                numDespacho: (viaje.numDespacho || "").toString(),
+                terminalOrigen: (viaje.terminalOrigen || "").toString(),
+                fechaPlanificada: (viaje.fechaPlanificada || "").toString(),
+                cisternadoReal: (viaje.cisternadoReal || "").toString(),
+                isCompletado: (viaje.isCompletado || false).toString(),
+                numeroUt: (viaje.numeroUt || "").toString(),
+                semi: (viaje.semi || "").toString(),
+                chofer: (viaje.chofer || "").toString(),
+                ultimoTracking: (viaje.ultimoTracking || "").toString(),
+                nViaje: (viaje.nViaje || "").toString(),
+                llegadaPlanta: (viaje.llegadaPlanta || "").toString(),
+                horarioVacio: (viaje.horarioVacio || "").toString(),
+                estadoUt: (viaje.estadoUt || "").toString()
+            },
+            topic: topic
+        };
+
+        const response = await admin.messaging().send(message);
+        console.log(`📡 [PUSH] Alerta enviada con éxito al tópico [${topic}] para UT ${viaje.numeroUt}. ID:`, response);
+    } catch (error) {
+        console.error(`❌ [PUSH ERROR] Error enviando alerta para UT ${viaje.numeroUt}:`, error.message);
+    }
+};
+
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
     
@@ -254,7 +305,6 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     return viajesFinales;
 };
 
-// 3. 👇 REQUERIMIENTO 3: Sincronización en segundo plano con Throttling Secuencial (Sin Promise.all) [txt]
 export const sincronizarDatosGoogleSheets = async () => {
     try {
         console.log("[BFF] 🔄 Iniciando ciclo de sincronización secuencial de Google Sheets...");
@@ -282,34 +332,27 @@ export const sincronizarDatosGoogleSheets = async () => {
             return 0;
         };
 
-        // Mantenemos la lectura íntegra de la columna B del Indice [txt]
         const listaDiasCompleta = rowsIndice.map(row => {
             const vals = row._rawData || [];
             return {
                 fecha: vals[0] || "Sin fecha",
-                sheetId: vals[1] || "" // Columna B del Indice [txt]
+                sheetId: vals[1] || ""
             };
         })
         .filter(d => d.sheetId.trim().length > 0)
         .sort((a, b) => parseFecha(b.fecha) - parseFecha(a.fecha));
 
-        // Consolidamos los 10 días históricos
         const listaDiasLimitada = listaDiasCompleta.slice(0, 10);
-
         const resultados = [];
         
-        // 👇 SOLUCIÓN: Iteración SECUENCIAL controlada para proteger la cuota de la API (Evita 429) [txt]
         for (let j = 0; j < listaDiasLimitada.length; j++) {
             const dia = listaDiasLimitada[j];
             try {
-                console.log(`[BFF] Descargando secuencialmente día ${j + 1}/10: ${dia.fecha} (${dia.sheetId})...`);
                 const viajesDia = await obtenerViajesDePlanillaInterno(dia.sheetId);
                 resultados.push(viajesDia);
-                
-                // 👇 Retraso activo de 1500ms entre planillas para dar respiro a la cuota [txt]
                 await delay(1500); 
             } catch (err) {
-                console.error(`[BFF ERROR] Falló la descarga del archivo día ${dia.fecha}:`, err.message);
+                console.error(`[BFF ERROR] Falló la descarga de ${dia.fecha}:`, err.message);
             }
         }
 
@@ -326,33 +369,41 @@ export const sincronizarDatosGoogleSheets = async () => {
         
         viajesConsolidados.sort((a, b) => parseFecha(b.fechaPlanificada) - parseFecha(a.fechaPlanificada));
 
-        // 👇 ACTUALIZACIÓN ATÓMICA: Se pisa la caché en memoria RAM solo si el bucle terminó con éxito [txt]
+        if (cacheViajesConsolidados.length > 0 && firebaseInitialized) {
+            for (const nuevo of viajesConsolidados) {
+                const viejo = cacheViajesConsolidados.find(v => v.idUnico === nuevo.idUnico);
+                if (viejo) {
+                    const cambioVacio = viejo.horarioVacio !== nuevo.horarioVacio;
+                    const cambioEstadoUt = viejo.estadoUt !== nuevo.estadoUt;
+                    
+                    if ((cambioVacio || cambioEstadoUt) && nuevo.numeroUt) {
+                        enviarNotificacionPushUT(nuevo);
+                    }
+                }
+            }
+        }
+
         cacheViajesConsolidados = viajesConsolidados;
         cacheDiasDisponibles = listaDiasLimitada;
         lastSyncTime = new Date();
 
         console.log(`[BFF CACHE] ✅ Sincronización finalizada: ${cacheViajesConsolidados.length} viajes listos en memoria.`);
     } catch (error) {
-        // 👇 TOLERANCIA A FALLAS: Si un ciclo falla por rate-limiting o timeout, NO se borra la caché existente [txt]
         console.error("❌ ERROR CRÍTICO EN TRABAJO DE SEGUNDO PLANO DEL BFF. SE CONSERVA LA CACHÉ ANTERIOR:", error.message);
     }
 };
 
-// 👇 REQUERIMIENTO 4: Arranque diferido de la caché (1s tras levantar Node) y Worker de 60s [txt]
 setTimeout(() => {
     console.log("🚀 Iniciando primera carga del caché BFF en memoria (Modo Throttling)...");
     sincronizarDatosGoogleSheets();
 }, 1000);
 
-// Ejecución periódica asíncrona de sincronización cada 60 segundos [txt]
 setInterval(sincronizarDatosGoogleSheets, 60000);
 
-
 // =================================================================================================
-// 👇 EXPORTS DE ENDPOINTS ULTRA-RÁPIDOS (< 5ms) [txt]
+// 👇 EXPORTS DE ENDPOINTS ULTRA-RÁPIDOS (< 5ms)
 // =================================================================================================
 
-// 1. Lectura clásica de planillas genéricas
 export const getSheetData = async (req, res) => {
     try {
         const { spreadsheetId, sheetName } = req.params;
@@ -370,7 +421,6 @@ export const getSheetData = async (req, res) => {
     }
 };
 
-// 2. Extracción consolidada individual de un día
 export const getViajesIntegradosDia = async (req, res) => {
     try {
         const { spreadsheetId } = req.params;
@@ -382,9 +432,7 @@ export const getViajesIntegradosDia = async (req, res) => {
     }
 };
 
-// 3. 👇 REQUERIMIENTO 5: Endpoint inmediato libre de latencia (Responde en < 5ms) [txt]
 export const getViajesRecientesAgregados = async (req, res) => {
-    // Si la app arranca de cero y la caché aún no está poblada, devuelve status 202 con estructura vacía (Skeletons) [txt]
     if (cacheViajesConsolidados.length === 0) {
         return res.status(202).json({
             success: true,
@@ -402,7 +450,6 @@ export const getViajesRecientesAgregados = async (req, res) => {
     });
 };
 
-// 4. Log de pruebas
 export const writeTestLog = async (req, res) => {
     res.status(200).json({ message: "Log guardado" });
 };
