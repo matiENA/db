@@ -52,18 +52,15 @@ const enviarNotificacionPushUT = async (viaje) => {
     try {
         const topic = `ut_${viaje.numeroUt}`;
         
-        // 👇 SOLUCIÓN: Construcción dinámica del estado en espejo con la UI del móvil [txt]
-        const lineaEstado = (viaje.horarioVacio && viaje.horarioVacio.trim().length > 0)
+        const lEstado = (viaje.horarioVacio && viaje.horarioVacio.trim().length > 0)
             ? `VACIO: ${viaje.horarioVacio.trim()}`
             : (viaje.estadoUt ? viaje.estadoUt.trim().toUpperCase() : "PENDIENTE");
 
-        // 👇 SOLUCIÓN ARQUITECTÓNICA: Payload Mixto (Notification + Data)
-        // Al incluir el bloque 'notification' con saltos de carro (\n), Google Play Services
-        // dibuja e interpola la alerta de forma INSTANTÁNEA en segundo plano o con la app cerrada.
+        // 👇 PAYLOAD CONSOLIDAD CON CANAL ASOCIADO Y ALTA PRIORIDAD [1.1.6]
         const message = {
             notification: {
                 title: `[UT: ${viaje.numeroUt || "S/D"}] ${viaje.chofer || "Chofer S/D"}`,
-                body: `${viaje.tractor || "S/D"} | ${viaje.semi || "S/D"} | Viaje: ${viaje.nViaje || "S/D"}\nTD: ${viaje.numDespacho || "S/N"}\n${lineaEstado}`
+                body: `${viaje.tractor || "S/D"} | ${viaje.semi || "S/D"} | Viaje: ${viaje.nViaje || "S/D"}\nTD: ${viaje.numDespacho || "S/N"}\n${lEstado}`
             },
             data: {
                 idUnico: (viaje.idUnico || "").toString(),
@@ -83,8 +80,13 @@ const enviarNotificacionPushUT = async (viaje) => {
                 estadoUt: (viaje.estadoUt || "").toString()
             },
             topic: topic,
+            // 👇 ACTUALIZADO: Bloque Android mapea el canal e indica el sonido [1.1.6]
             android: {
-                priority: "high"
+                priority: "high",
+                notification: {
+                    channelId: "canal_estados_criticos", // 👈 REQUERIDO: Enruta la notificación en segundo plano [1.1.4, 1.1.6]
+                    sound: "default"
+                }
             }
         };
 
@@ -94,7 +96,6 @@ const enviarNotificacionPushUT = async (viaje) => {
         console.error(`❌ [PUSH ERROR] Error enviando alerta para UT ${viaje.numeroUt}:`, error.message);
     }
 };
-
 // Procesamiento de planillas con optimización de memoria
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
