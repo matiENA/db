@@ -52,7 +52,7 @@ const enviarNotificacionPushUT = async (viaje) => {
     try {
         const topic = `ut_${viaje.numeroUt}`;
         
-        const message = {
+       const message = {
             data: {
                 idUnico: (viaje.idUnico || "").toString(),
                 tractor: (viaje.tractor || "").toString(),
@@ -70,15 +70,19 @@ const enviarNotificacionPushUT = async (viaje) => {
                 horarioVacio: (viaje.horarioVacio || "").toString(),
                 estadoUt: (viaje.estadoUt || "").toString()
             },
-            topic: topic
+            topic: topic,
+            // 👇 EL BLOQUE CRÍTICO PARA DESPERTAR LA APP CERRADA 👇
+            android: {
+                priority: "high"
+            }
         };
 
-        const response = await admin.messaging().send(message);
-        console.log(`📡 [PUSH] Alerta enviada con éxito al tópico [${topic}] para UT ${viaje.numeroUt}. ID:`, response);
-    } catch (error) {
-        console.error(`❌ [PUSH ERROR] Error enviando alerta para UT ${viaje.numeroUt}:`, error.message);
-    }
-};
+        try {
+            const response = await admin.messaging().send(message);
+            console.log(`📡 [PUSH] Alerta enviada con éxito al tópico [${topic}] para UT ${viaje.numeroUt}. ID:`, response);
+        } catch (error) {
+            console.error(`❌ [PUSH ERROR] Error enviando alerta para UT ${viaje.numeroUt}:`, error.message);
+        }
 
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
