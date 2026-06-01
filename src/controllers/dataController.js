@@ -52,15 +52,16 @@ const enviarNotificacionPushUT = async (viaje) => {
     try {
         const topic = `ut_${viaje.numeroUt}`;
         
-        const lEstado = (viaje.horarioVacio && viaje.horarioVacio.trim().length > 0)
+        // 👇 SOLUCIÓN: Construcción dinámica del estado en espejo con la UI del móvil [txt]
+        const lineaEstado = (viaje.horarioVacio && viaje.horarioVacio.trim().length > 0)
             ? `VACIO: ${viaje.horarioVacio.trim()}`
             : (viaje.estadoUt ? viaje.estadoUt.trim().toUpperCase() : "PENDIENTE");
 
-        // 👇 PAYLOAD CONSOLIDAD CON CANAL ASOCIADO Y ALTA PRIORIDAD [1.1.6]
+        // 👇 SOLUCIÓN ARQUITECTÓNICA: Payload Mixto (Notification + Data)
         const message = {
             notification: {
                 title: `[UT: ${viaje.numeroUt || "S/D"}] ${viaje.chofer || "Chofer S/D"}`,
-                body: `${viaje.tractor || "S/D"} | ${viaje.semi || "S/D"} | Viaje: ${viaje.nViaje || "S/D"}\nTD: ${viaje.numDespacho || "S/N"}\n${lEstado}`
+                body: `${viaje.tractor || "S/D"} | ${viaje.semi || "S/D"} | Viaje: ${viaje.nViaje || "S/D"}\nTD: ${viaje.numDespacho || "S/N"}\n${lineaEstado}`
             },
             data: {
                 idUnico: (viaje.idUnico || "").toString(),
@@ -80,13 +81,8 @@ const enviarNotificacionPushUT = async (viaje) => {
                 estadoUt: (viaje.estadoUt || "").toString()
             },
             topic: topic,
-            // 👇 ACTUALIZADO: Bloque Android mapea el canal e indica el sonido [1.1.6]
             android: {
-                priority: "high",
-                notification: {
-                    channelId: "canal_estados_criticos", // 👈 REQUERIDO: Enruta la notificación en segundo plano [1.1.4, 1.1.6]
-                    sound: "default"
-                }
+                priority: "high"
             }
         };
 
@@ -96,6 +92,7 @@ const enviarNotificacionPushUT = async (viaje) => {
         console.error(`❌ [PUSH ERROR] Error enviando alerta para UT ${viaje.numeroUt}:`, error.message);
     }
 };
+
 // Procesamiento de planillas con optimización de memoria
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
@@ -324,7 +321,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
 
 export const sincronizarDatosGoogleSheets = async () => {
     try {
-        console.log("[BFF] 🔄 Iniciando ciclo de sincronización secuencial de Google Sheets...");
+        console.log("[BFF] 🔄 Iniciando ciclo de sincronización de Google Sheets...");
         
         const docMaster = await initGoogleSheets(masterIndexSheetId);
         const sheetIndice = docMaster.sheetsByTitle['Indice'];
@@ -367,6 +364,7 @@ export const sincronizarDatosGoogleSheets = async () => {
             try {
                 const viajesDia = await obtenerViajesDePlanillaInterno(dia.sheetId);
                 resultados.push(viajesDia);
+                // Respiro de 1.5s entre pestañas para evitar sobrecarga de la API de lectura individual
                 await delay(1500); 
             } catch (err) {
                 console.error(`[BFF ERROR] Falló la descarga de ${dia.fecha}:`, err.message);
@@ -410,12 +408,28 @@ export const sincronizarDatosGoogleSheets = async () => {
     }
 };
 
-setTimeout(() => {
-    console.log("🚀 Iniciando primera carga del caché BFF en memoria (Modo Throttling)...");
-    sincronizarDatosGoogleSheets();
-}, 1000);
+// =================================================================================================
+// 👇 WORKER INTELIGENTE: Bucle infinito asíncrono para prevenir Error 429 (Throttling Estricto)
+// =================================================================================================
+const iniciarWorkerLogistico = async () => {
+    console.log("🚀 Iniciando Worker Logístico (Modo Throttling Secuencial)...");
+    
+    // Pequeño retraso al iniciar el servidor para no agobiar a Google apenas bootea
+    await delay(3000); 
 
-setInterval(sincronizarDatosGoogleSheets, 60000);
+    while (true) {
+        // 1. Ejecuta el ciclo completo (tardará lo que tenga que tardar: 30s, 60s, etc.)
+        await sincronizarDatosGoogleSheets();
+        
+        // 2. Solo cuando termine el ciclo entero de TODAS las hojas, recién ahí descansa 60 segundos completos
+        console.log("💤 [WORKER] Ciclo terminado. Descansando 60 segundos para respetar cuota API...");
+        await delay(60000); 
+    }
+};
+
+// Arrancamos el worker en segundo plano
+iniciarWorkerLogistico();
+
 
 // =================================================================================================
 // 👇 EXPORTS DE ENDPOINTS ULTRA-RÁPIDOS (< 5ms)
