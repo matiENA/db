@@ -2,7 +2,7 @@ import { initGoogleSheets } from '../config/googleSheets.js';
 import admin from 'firebase-admin';
 import fs from 'fs';
 
-// Inicialización de la Caché Global en Memoria del BFF
+// Inicialización de la Caché Global en Memoria del BFF [txt]
 let cacheViajesConsolidados = []; 
 let cacheDiasDisponibles = [];
 let lastSyncTime = null;
@@ -52,10 +52,12 @@ const enviarNotificacionPushUT = async (viaje) => {
     try {
         const topic = `ut_${viaje.numeroUt}`;
         
+        // 👇 SOLUCIÓN: Construcción dinámica del estado en espejo con la UI del móvil [txt]
         const lineaEstado = (viaje.horarioVacio && viaje.horarioVacio.trim().length > 0)
             ? `VACIO: ${viaje.horarioVacio.trim()}`
             : (viaje.estadoUt ? viaje.estadoUt.trim().toUpperCase() : "PENDIENTE");
 
+        // 👇 SOLUCIÓN ARQUITECTÓNICA: Payload Mixto (Notification + Data)
         const message = {
             notification: {
                 title: `[UT: ${viaje.numeroUt || "S/D"}] ${viaje.chofer || "Chofer S/D"}`,
@@ -170,10 +172,6 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
 
     const viajesFinales = [];
     const procesados = new Set();
-    
-    // 👇 PARCHE 1: Variables para agrupar filas sueltas secuencialmente
-    let currentFallbackGroup = 0;
-    let lastFallbackUt = "";
 
     for (let i = 0; i < rowsRuteo.length; i++) {
         const row = rowsRuteo[i];
@@ -183,16 +181,6 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
         const trRuteo = (vals[0] || "").toString().trim();
         const tdMatch = vals.find(v => regexTD.test((v || "").toString().trim()));
         const tdRuteo = tdMatch ? tdMatch.toString().trim() : "";
-
-        const numeroUt = idxUt >= 0 ? (vals[idxUt] || "").toString().trim() : "";
-        const chofer = idxChofer >= 0 ? (vals[idxChofer] || "").toString().trim() : "";
-        const nViaje = idxNViaje >= 0 ? (vals[idxNViaje] || "").toString().trim() : "";
-
-        // Si aparece un chofer explícito o cambia la UT, creamos un nuevo grupo de Fallback
-        if (chofer || nViaje || (numeroUt && numeroUt !== lastFallbackUt)) {
-            currentFallbackGroup++;
-            if (numeroUt) lastFallbackUt = numeroUt;
-        }
 
         const isTractorValido = trRuteo.length > 0 && 
                               trRuteo.length <= 12 && 
@@ -205,8 +193,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
         const isTdValido = tdRuteo.length > 0;
 
         if (isTractorValido || isTdValido) {
-            // 👇 PARCHE 2: Clave de merge robusta (Por TD o secuencial)
-            const keyMerge = tdRuteo ? tdRuteo.trim() : `FALLBACK_${numeroUt}_${currentFallbackGroup}`;
+            const keyMerge = tdRuteo ? tdRuteo.trim() : `FALLBACK_${spreadsheetId.substring(0, 8)}_${i}`;
             
             if (!procesados.has(keyMerge)) {
                 procesados.add(keyMerge);
@@ -220,7 +207,9 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                     }
                 } catch (e) {}
 
+                const numeroUt = idxUt >= 0 ? (vals[idxUt] || "").toString().trim() : "";
                 const semi = idxSemi >= 0 ? (vals[idxSemi] || "").toString().trim() : "";
+                const chofer = idxChofer >= 0 ? (vals[idxChofer] || "").toString().trim() : "";
                 
                 const rawTracking = idxTracking >= 0 ? (vals[idxTracking] || "").toString().trim() : "";
                 const ultimoTracking = rawTracking ? rawTracking.split('/')[0].trim() : "";
@@ -231,11 +220,16 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                 const colorHexA = regexHex.test(colorHexAVal) ? colorHexAVal : null;
                 const colorHexHx = regexHex.test(colorHexHxVal) ? colorHexHxVal : null;
 
+                const nViaje = idxNViaje >= 0 ? (vals[idxNViaje] || "").toString().trim() : "";
                 const llegadaPlanta = idxLlegadaPlanta >= 0 ? (vals[idxLlegadaPlanta] || "").toString().trim() : "";
-                
-                let horarioVacio = idxVacio >= 0 ? (vals[idxVacio] || "").toString().trim() : "";
-                let isCompletado = idxVacio >= 0 && (vals[idxVacio] || "").toString().trim().length > 0;
+                const horarioVacio = idxVacio >= 0 ? (vals[idxVacio] || "").toString().trim() : "";
+
+                const isCompletado = idxVacio >= 0 && (vals[idxVacio] || "").toString().trim().length > 0;
+
                 let estadoUt = idxEstadoUt >= 0 ? (vals[idxEstadoUt] || "").toString().trim() : "";
+                if (isCompletado) {
+                    estadoUt = "VACIO";
+                }
 
                 let rawFecha = "";
                 if (idxDestino > 0) {
@@ -253,20 +247,8 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                 const fechaLimpia = rawFecha.split(" ")[0] || "Sin Fecha";
 
                 const filasH12 = agrupadoH12[tdRuteo] || [];
-                const filasRuteoDeEsteTD = tdRuteo ? (agrupadoRuteo[tdRuteo] || []) : [vals];
+                const filasRuteoDeEsteTD = agrupadoRuteo[tdRuteo] || [];
                 
-                // 👇 PARCHE 3: Escaneo profundo de estados. Verifica si alguna de las filas 
-                // secundarias de este viaje tiene cargado el horario de vacío.
-                filasRuteoDeEsteTD.forEach(rVals => {
-                    const rowCompletado = idxVacio >= 0 && (rVals[idxVacio] || "").toString().trim().length > 0;
-                    if (rowCompletado) {
-                        isCompletado = true;
-                        if (!horarioVacio) horarioVacio = (rVals[idxVacio] || "").toString().trim();
-                    }
-                });
-
-                if (isCompletado) estadoUt = "VACIO";
-
                 const mapaDirecciones = {};
                 filasRuteoDeEsteTD.forEach(rVals => {
                     const dest = (rVals[idxDestino] || "").toString().trim();
@@ -298,19 +280,15 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                 } else {
                     const textoRuteo = vals.join(" ").toUpperCase();
                     terminalLimpia = determinarTerminal(textoRuteo);
+                    const dir = idxDireccion >= 0 ? (vals[idxDireccion] || "").toString().trim() : "";
 
-                    // 👇 PARCHE 4: Si no hay Hoja 12, mapeamos TODAS las filas de la pestaña Ruteo
-                    // para no perder las paradas/clientes secundarios.
-                    filasRuteoDeEsteTD.forEach(rVals => {
-                        const dir = idxDireccion >= 0 ? (rVals[idxDireccion] || "").toString().trim() : "";
-                        paradas.push({
-                            destino: rVals[idxDestino >= 0 ? idxDestino : 23] || "Validar Destino",
-                            producto: rVals[idxProducto] || "",
-                            amount: rVals[idxCantidad] || "",
-                            cantidad: rVals[idxCantidad] || "",
-                            cisternado: "",
-                            direccion: dir
-                        });
+                    paradas.push({
+                        destino: vals[idxDestino >= 0 ? idxDestino : 23] || "Validar Destino",
+                        producto: vals[idxProducto] || "",
+                        amount: vals[idxCantidad] || "",
+                        cantidad: vals[idxCantidad] || "",
+                        cisternado: "",
+                        direccion: dir
                     });
                 }
 
@@ -386,6 +364,7 @@ export const sincronizarDatosGoogleSheets = async () => {
             try {
                 const viajesDia = await obtenerViajesDePlanillaInterno(dia.sheetId);
                 resultados.push(viajesDia);
+                // Respiro de 1.5s entre pestañas para evitar sobrecarga de la API de lectura individual
                 await delay(1500); 
             } catch (err) {
                 console.error(`[BFF ERROR] Falló la descarga de ${dia.fecha}:`, err.message);
@@ -425,22 +404,36 @@ export const sincronizarDatosGoogleSheets = async () => {
 
         console.log(`[BFF CACHE] ✅ Sincronización finalizada: ${cacheViajesConsolidados.length} viajes listos en memoria.`);
     } catch (error) {
-        console.error("❌ ERROR CRÍTICO EN TRABAJO DE SEGUNDO PLANO DEL BFF:", error.message);
+        console.error("❌ ERROR CRÍTICO EN TRABAJO DE SEGUNDO PLANO DEL BFF. SE CONSERVA LA CACHÉ ANTERIOR:", error.message);
     }
 };
 
+// =================================================================================================
+// 👇 WORKER INTELIGENTE: Bucle infinito asíncrono para prevenir Error 429 (Throttling Estricto)
+// =================================================================================================
 const iniciarWorkerLogistico = async () => {
     console.log("🚀 Iniciando Worker Logístico (Modo Throttling Secuencial)...");
+    
+    // Pequeño retraso al iniciar el servidor para no agobiar a Google apenas bootea
     await delay(3000); 
 
     while (true) {
+        // 1. Ejecuta el ciclo completo (tardará lo que tenga que tardar: 30s, 60s, etc.)
         await sincronizarDatosGoogleSheets();
-        console.log("💤 [WORKER] Ciclo terminado. Descansando 60 segundos...");
+        
+        // 2. Solo cuando termine el ciclo entero de TODAS las hojas, recién ahí descansa 60 segundos completos
+        console.log("💤 [WORKER] Ciclo terminado. Descansando 60 segundos para respetar cuota API...");
         await delay(60000); 
     }
 };
 
+// Arrancamos el worker en segundo plano
 iniciarWorkerLogistico();
+
+
+// =================================================================================================
+// 👇 EXPORTS DE ENDPOINTS ULTRA-RÁPIDOS (< 5ms)
+// =================================================================================================
 
 export const getSheetData = async (req, res) => {
     try {
@@ -465,7 +458,7 @@ export const getViajesIntegradosDia = async (req, res) => {
         const viajes = await obtenerViajesDePlanillaInterno(spreadsheetId);
         res.status(200).json({ success: true, data: viajes });
     } catch (error) {
-        console.error("❌ ERROR INTEGRANDO VIAJES:", error);
+        console.error("❌ ERROR INTEGRANDO VIAJES INDIVIDUALES:", error);
         res.status(500).json({ success: false, error: error.message });
     }
 };
@@ -480,15 +473,10 @@ export const getViajesRecientesAgregados = async (req, res) => {
         });
     }
 
-    // El Filtrado Final Backend-Driven (Como acordamos en UI)
-    const activos = cacheViajesConsolidados.filter(v => !v.isCompletado);
-    const completados = cacheViajesConsolidados.filter(v => v.isCompletado);
-
     res.status(200).json({
         success: true,
         diasDisponibles: cacheDiasDisponibles,
-        activos: activos,
-        completados: completados,
+        data: cacheViajesConsolidados,
         cachedAt: lastSyncTime
     });
 };
