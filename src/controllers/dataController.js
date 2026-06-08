@@ -74,7 +74,7 @@ const enviarNotificacionPushUT = async (viaje) => {
         };
 
         const response = await admin.messaging().send(message);
-        console.log(`📡 [PUSH] Alerta mixta enviada con éxito al tópico [${topic}] para UT ${viaje.numeroUt}. ID:`, response);
+        console.log(`📡 [PUSH] Alerta enviada con éxito al tópico [${topic}] para UT ${viaje.numeroUt}. ID:`, response);
     } catch (error) {
         console.error(`❌ [PUSH ERROR] Error enviando alerta para UT ${viaje.numeroUt}:`, error.message);
     }
@@ -83,7 +83,6 @@ const enviarNotificacionPushUT = async (viaje) => {
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
     
-    // Si la hoja se llama diferente en tu archivo real, asegúrate de que esto coincida
     const sheetRuteo = doc.sheetsByTitle['Ruteo'] || doc.sheetsByIndex[0];
     const sheetH12 = doc.sheetsByTitle['Hoja 12'];
     
@@ -91,6 +90,10 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
 
     const hasH12 = !!sheetH12;
     const rowsH12 = hasH12 ? await sheetH12.getRows() : [];
+    
+    // 👇 NOVEDAD: Mapeamos los headers de Hoja 12 para encontrar dónde está "DESTINOS" 👇
+    const headersH12 = hasH12 ? (sheetH12.headerValues || []).map(h => (h||"").toString().trim().toUpperCase()) : [];
+    const idxDestinosAR_H12 = headersH12.indexOf("DESTINOS") >= 0 ? headersH12.indexOf("DESTINOS") : (headersH12.indexOf("DESTINOAR") >= 0 ? headersH12.indexOf("DESTINOAR") : 18);
 
     if (sheetRuteo.rowCount > 0) {
         try {
@@ -125,7 +128,6 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const idxEstadoUt = headersLimpio.indexOf("ESTADOUT"); 
 
     const idxDestino = headersLimpio.indexOf("DESTINO");
-    // 👇 AQUÍ ATRAPAMOS LA COLUMNA CON LOS NOMBRES LIMPIOS 👇
     const idxDestinosAR = headersLimpio.indexOf("DESTINOS") >= 0 ? headersLimpio.indexOf("DESTINOS") : headersLimpio.indexOf("DESTINOAR");
     
     const idxProducto = headersLimpio.indexOf("PRODUCTO") >= 0 ? headersLimpio.indexOf("PRODUCTO") : 24;
@@ -241,8 +243,8 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                     if (dest) mapaDirecciones[dest] = addr;
                 });
 
-                // 👇 EXTRAEMOS EL NOMBRE LIMPIO A NIVEL VIAJE 👇
-                const destinoLimpio = idxDestinosAR >= 0 ? (vals[idxDestinosAR] || "").toString().trim() : "";
+                // El destino de respaldo (por si falla Hoja 12)
+                const destinoLimpioRuteo = idxDestinosAR >= 0 ? (vals[idxDestinosAR] || "").toString().trim() : "";
 
                 const paradas = [];
                 let terminalLimpia = "Sin Terminal";
@@ -256,9 +258,14 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                     for (let f12 of filasH12) {
                         const destH12 = f12[7] || "Sin Destino";
                         const dir = mapaDirecciones[destH12] || ""; 
+                        
+                        // 👇 LA SOLUCIÓN DEFINITIVA: Leemos "DESTINOS" directamente de la Hoja 12 👇
+                        const destinoLimpioH12 = (f12[idxDestinosAR_H12] || "").toString().trim();
+                        const nombreFinal = destinoLimpioH12 || destinoLimpioRuteo;
+
                         paradas.push({
                             destino: destH12,
-                            destinoAR: destinoLimpio, // Inyectado
+                            destinoAR: nombreFinal, 
                             producto: f12[8] || "",
                             cantidad: f12[9] || "",
                             cisternado: f12[10] || "",
@@ -272,13 +279,16 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
 
                     paradas.push({
                         destino: vals[idxDestino >= 0 ? idxDestino : 23] || "Validar Destino",
-                        destinoAR: destinoLimpio, // Inyectado
+                        destinoAR: destinoLimpioRuteo, 
                         producto: vals[idxProducto] || "",
                         cantidad: vals[idxCantidad] || "",
                         cisternado: "",
                         direccion: dir
                     });
                 }
+                
+                // Aseguramos que la tarjeta principal herede el primer destino limpio de sus paradas
+                const tituloPrincipal = paradas.length > 0 && paradas[0].destinoAR ? paradas[0].destinoAR : destinoLimpioRuteo;
 
                 viajesFinales.push({
                     idUnico: keyMerge,
@@ -300,8 +310,8 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                     llegadaPlanta: llegadaPlanta,
                     horarioVacio: horarioVacio,
                     estadoUt: estadoUt,
-                    cliente: destinoLimpio, // ALIMENTA EL DROPDOWN DE LA UI
-                    destinoAR: destinoLimpio // ALIMENTA EL TITULO DE LA TARJETA
+                    cliente: tituloPrincipal, 
+                    destinoAR: tituloPrincipal 
                 });
             }
         }
@@ -311,15 +321,12 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
 
 export const sincronizarDatosGoogleSheets = async () => {
     try {
-        console.log("[BFF] 🔄 Iniciando ciclo de sincronización de Google Sheets...");
-        
+        console.log("[BFF] 🔄 Iniciando ciclo de sincronización...");
         const docMaster = await initGoogleSheets(masterIndexSheetId);
         const sheetIndice = docMaster.sheetsByTitle['Indice'];
-        
         if (!sheetIndice) return;
-
-        const rowsIndice = await sheetIndice.getRows();
         
+        const rowsIndice = await sheetIndice.getRows();
         const parseFecha = (str) => {
             try {
                 const parts = str.split("/");
@@ -332,7 +339,7 @@ export const sincronizarDatosGoogleSheets = async () => {
             } catch (e) {}
             return 0;
         };
-
+        
         const listaDiasCompleta = rowsIndice.map(row => {
             const vals = row._rawData || [];
             return { fecha: vals[0] || "Sin fecha", sheetId: vals[1] || "" };
@@ -370,7 +377,6 @@ export const sincronizarDatosGoogleSheets = async () => {
         cacheViajesConsolidados = viajesConsolidados;
         cacheDiasDisponibles = listaDiasCompleta.slice(0, 10);
         lastSyncTime = new Date();
-
         console.log(`[BFF CACHE] ✅ Sincronización finalizada: ${cacheViajesConsolidados.length} viajes.`);
     } catch (error) {
         console.error("❌ ERROR CRÍTICO EN BFF:", error.message);
@@ -393,7 +399,6 @@ export const getSheetData = async (req, res) => {
         const doc = await initGoogleSheets(spreadsheetId);
         const sheet = doc.sheetsByTitle[sheetName];
         if (!sheet) return res.status(404).json({ success: false });
-
         const rows = await sheet.getRows();
         res.status(200).json({ success: true, headers: sheet.headerValues || [], data: rows.map(r => [...(r._rawData || [])]) });
     } catch (error) {
@@ -414,7 +419,6 @@ export const getViajesRecientesAgregados = async (req, res) => {
     res.status(200).json({ success: true, diasDisponibles: cacheDiasDisponibles, data: cacheViajesConsolidados });
 };
 
-// 👇 Vuelve a agregar esta función que faltaba para que dataRoutes.js no falle 👇
 export const writeTestLog = async (req, res) => {
     try {
         console.log("📝 [TEST LOG] Recibido:", req.body);
