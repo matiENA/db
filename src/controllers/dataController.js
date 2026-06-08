@@ -413,3 +413,13 @@ export const getViajesRecientesAgregados = async (req, res) => {
     if (cacheViajesConsolidados.length === 0) return res.status(202).json({ success: true, data: [] });
     res.status(200).json({ success: true, diasDisponibles: cacheDiasDisponibles, data: cacheViajesConsolidados });
 };
+
+// 👇 Vuelve a agregar esta función que faltaba para que dataRoutes.js no falle 👇
+export const writeTestLog = async (req, res) => {
+    try {
+        console.log("📝 [TEST LOG] Recibido:", req.body);
+        res.status(200).json({ success: true, message: "Log registrado" });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
