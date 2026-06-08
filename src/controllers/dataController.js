@@ -2,7 +2,7 @@ import { initGoogleSheets } from '../config/googleSheets.js';
 import admin from 'firebase-admin';
 import fs from 'fs';
 
-// Inicialización de la Caché Global en Memoria del BFF [txt]
+// Inicialización de la Caché Global en Memoria del BFF
 let cacheViajesConsolidados = []; 
 let cacheDiasDisponibles = [];
 let lastSyncTime = null;
@@ -51,13 +51,10 @@ const enviarNotificacionPushUT = async (viaje) => {
     if (!firebaseInitialized) return;
     try {
         const topic = `ut_${viaje.numeroUt}`;
-        
-        // 👇 SOLUCIÓN: Construcción dinámica del estado en espejo con la UI del móvil [txt]
         const lineaEstado = (viaje.horarioVacio && viaje.horarioVacio.trim().length > 0)
             ? `VACIO: ${viaje.horarioVacio.trim()}`
             : (viaje.estadoUt ? viaje.estadoUt.trim().toUpperCase() : "PENDIENTE");
 
-        // 👇 SOLUCIÓN ARQUITECTÓNICA: Payload Mixto (Notification + Data)
         const message = {
             notification: {
                 title: `[UT: ${viaje.numeroUt || "S/D"}] ${viaje.chofer || "Chofer S/D"}`,
@@ -69,21 +66,11 @@ const enviarNotificacionPushUT = async (viaje) => {
                 numDespacho: (viaje.numDespacho || "").toString(),
                 terminalOrigen: (viaje.terminalOrigen || "").toString(),
                 fechaPlanificada: (viaje.fechaPlanificada || "").toString(),
-                cisternadoReal: (viaje.cisternadoReal || "").toString(),
-                isCompletado: (viaje.isCompletado || false).toString(),
                 numeroUt: (viaje.numeroUt || "").toString(),
-                semi: (viaje.semi || "").toString(),
-                chofer: (viaje.chofer || "").toString(),
-                ultimoTracking: (viaje.ultimoTracking || "").toString(),
-                nViaje: (viaje.nViaje || "").toString(),
-                llegadaPlanta: (viaje.llegadaPlanta || "").toString(),
-                horarioVacio: (viaje.horarioVacio || "").toString(),
                 estadoUt: (viaje.estadoUt || "").toString()
             },
             topic: topic,
-            android: {
-                priority: "high"
-            }
+            android: { priority: "high" }
         };
 
         const response = await admin.messaging().send(message);
@@ -93,11 +80,11 @@ const enviarNotificacionPushUT = async (viaje) => {
     }
 };
 
-// Procesamiento de planillas con optimización de memoria
 const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const doc = await initGoogleSheets(spreadsheetId);
     
-    const sheetRuteo = doc.sheetsByTitle['Ruteo'];
+    // Si la hoja se llama diferente en tu archivo real, asegúrate de que esto coincida
+    const sheetRuteo = doc.sheetsByTitle['Ruteo'] || doc.sheetsByIndex[0];
     const sheetH12 = doc.sheetsByTitle['Hoja 12'];
     
     if (!sheetRuteo) return [];
@@ -138,6 +125,9 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
     const idxEstadoUt = headersLimpio.indexOf("ESTADOUT"); 
 
     const idxDestino = headersLimpio.indexOf("DESTINO");
+    // 👇 AQUÍ ATRAPAMOS LA COLUMNA CON LOS NOMBRES LIMPIOS 👇
+    const idxDestinosAR = headersLimpio.indexOf("DESTINOS") >= 0 ? headersLimpio.indexOf("DESTINOS") : headersLimpio.indexOf("DESTINOAR");
+    
     const idxProducto = headersLimpio.indexOf("PRODUCTO") >= 0 ? headersLimpio.indexOf("PRODUCTO") : 24;
     const idxCantidad = headersLimpio.indexOf("CANTIDAD") >= 0 ? headersLimpio.indexOf("CANTIDAD") : 25;
     const idxCisternado = headersLimpio.indexOf("CISTERNADO") >= 0 ? headersLimpio.indexOf("CISTERNADO") : 29;
@@ -190,9 +180,7 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                               !trRuteo.startsWith("#") &&
                               !trRuteo.startsWith(",");
 
-        const isTdValido = tdRuteo.length > 0;
-
-        if (isTractorValido || isTdValido) {
+        if (isTractorValido || tdRuteo.length > 0) {
             const keyMerge = tdRuteo ? tdRuteo.trim() : `FALLBACK_${spreadsheetId.substring(0, 8)}_${i}`;
             
             if (!procesados.has(keyMerge)) {
@@ -225,11 +213,8 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                 const horarioVacio = idxVacio >= 0 ? (vals[idxVacio] || "").toString().trim() : "";
 
                 const isCompletado = idxVacio >= 0 && (vals[idxVacio] || "").toString().trim().length > 0;
-
                 let estadoUt = idxEstadoUt >= 0 ? (vals[idxEstadoUt] || "").toString().trim() : "";
-                if (isCompletado) {
-                    estadoUt = "VACIO";
-                }
+                if (isCompletado) estadoUt = "VACIO";
 
                 let rawFecha = "";
                 if (idxDestino > 0) {
@@ -256,6 +241,9 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                     if (dest) mapaDirecciones[dest] = addr;
                 });
 
+                // 👇 EXTRAEMOS EL NOMBRE LIMPIO A NIVEL VIAJE 👇
+                const destinoLimpio = idxDestinosAR >= 0 ? (vals[idxDestinosAR] || "").toString().trim() : "";
+
                 const paradas = [];
                 let terminalLimpia = "Sin Terminal";
                 let cisternadoReal = vals[idxCisternado] || "";
@@ -270,8 +258,8 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                         const dir = mapaDirecciones[destH12] || ""; 
                         paradas.push({
                             destino: destH12,
+                            destinoAR: destinoLimpio, // Inyectado
                             producto: f12[8] || "",
-                            amount: f12[9] || "",
                             cantidad: f12[9] || "",
                             cisternado: f12[10] || "",
                             direccion: dir
@@ -284,8 +272,8 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
 
                     paradas.push({
                         destino: vals[idxDestino >= 0 ? idxDestino : 23] || "Validar Destino",
+                        destinoAR: destinoLimpio, // Inyectado
                         producto: vals[idxProducto] || "",
-                        amount: vals[idxCantidad] || "",
                         cantidad: vals[idxCantidad] || "",
                         cisternado: "",
                         direccion: dir
@@ -299,188 +287,4 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                     terminalOrigen: terminalLimpia,
                     fechaPlanificada: fechaLimpia,
                     cisternadoReal: cisternadoReal,
-                    colorHex: colorHexLegacy,
-                    isCompletado: isCompletado,
-                    paradas: paradas,
-                    numeroUt: numeroUt,
-                    semi: semi,
-                    chofer: chofer,
-                    ultimoTracking: ultimoTracking,
-                    colorHexA: colorHexA,
-                    colorHexHx: colorHexHx,
-                    nViaje: nViaje,
-                    llegadaPlanta: llegadaPlanta,
-                    horarioVacio: horarioVacio,
-                    estadoUt: estadoUt
-                });
-            }
-        }
-    }
-    return viajesFinales;
-};
-
-export const sincronizarDatosGoogleSheets = async () => {
-    try {
-        console.log("[BFF] 🔄 Iniciando ciclo de sincronización de Google Sheets...");
-        
-        const docMaster = await initGoogleSheets(masterIndexSheetId);
-        const sheetIndice = docMaster.sheetsByTitle['Indice'];
-        
-        if (!sheetIndice) {
-            console.error("❌ Sincronizador: No se encontró la pestaña 'Indice' en la planilla maestra.");
-            return;
-        }
-
-        const rowsIndice = await sheetIndice.getRows();
-        
-        const parseFecha = (str) => {
-            try {
-                const parts = str.split("/");
-                if (parts.length === 3) {
-                    const d = parts[0].padStart(2, '0');
-                    const m = parts[1].padStart(2, '0');
-                    const y = parts[2].split(" ")[0].trim();
-                    return parseInt(`${y}${m}${d}`, 10);
-                }
-            } catch (e) {}
-            return 0;
-        };
-
-        const listaDiasCompleta = rowsIndice.map(row => {
-            const vals = row._rawData || [];
-            return {
-                fecha: vals[0] || "Sin fecha",
-                sheetId: vals[1] || ""
-            };
-        })
-        .filter(d => d.sheetId.trim().length > 0)
-        .sort((a, b) => parseFecha(b.fecha) - parseFecha(a.fecha));
-
-        const listaDiasLimitada = listaDiasCompleta.slice(0, 10);
-        const resultados = [];
-        
-        for (let j = 0; j < listaDiasLimitada.length; j++) {
-            const dia = listaDiasLimitada[j];
-            try {
-                const viajesDia = await obtenerViajesDePlanillaInterno(dia.sheetId);
-                resultados.push(viajesDia);
-                // Respiro de 1.5s entre pestañas para evitar sobrecarga de la API de lectura individual
-                await delay(1500); 
-            } catch (err) {
-                console.error(`[BFF ERROR] Falló la descarga de ${dia.fecha}:`, err.message);
-            }
-        }
-
-        const todosLosViajes = resultados.flat();
-
-        const vistos = new Set();
-        const viajesConsolidados = [];
-        for (const v of todosLosViajes) {
-            if (!vistos.has(v.idUnico)) {
-                vistos.add(v.idUnico);
-                viajesConsolidados.push(v);
-            }
-        }
-        
-        viajesConsolidados.sort((a, b) => parseFecha(b.fechaPlanificada) - parseFecha(a.fechaPlanificada));
-
-        if (cacheViajesConsolidados.length > 0 && firebaseInitialized) {
-            for (const nuevo of viajesConsolidados) {
-                const viejo = cacheViajesConsolidados.find(v => v.idUnico === nuevo.idUnico);
-                if (viejo) {
-                    const cambioVacio = viejo.horarioVacio !== nuevo.horarioVacio;
-                    const cambioEstadoUt = viejo.estadoUt !== nuevo.estadoUt;
-                    
-                    if ((cambioVacio || cambioEstadoUt) && nuevo.numeroUt) {
-                        enviarNotificacionPushUT(nuevo);
-                    }
-                }
-            }
-        }
-
-        cacheViajesConsolidados = viajesConsolidados;
-        cacheDiasDisponibles = listaDiasLimitada;
-        lastSyncTime = new Date();
-
-        console.log(`[BFF CACHE] ✅ Sincronización finalizada: ${cacheViajesConsolidados.length} viajes listos en memoria.`);
-    } catch (error) {
-        console.error("❌ ERROR CRÍTICO EN TRABAJO DE SEGUNDO PLANO DEL BFF. SE CONSERVA LA CACHÉ ANTERIOR:", error.message);
-    }
-};
-
-// =================================================================================================
-// 👇 WORKER INTELIGENTE: Bucle infinito asíncrono para prevenir Error 429 (Throttling Estricto)
-// =================================================================================================
-const iniciarWorkerLogistico = async () => {
-    console.log("🚀 Iniciando Worker Logístico (Modo Throttling Secuencial)...");
-    
-    // Pequeño retraso al iniciar el servidor para no agobiar a Google apenas bootea
-    await delay(3000); 
-
-    while (true) {
-        // 1. Ejecuta el ciclo completo (tardará lo que tenga que tardar: 30s, 60s, etc.)
-        await sincronizarDatosGoogleSheets();
-        
-        // 2. Solo cuando termine el ciclo entero de TODAS las hojas, recién ahí descansa 60 segundos completos
-        console.log("💤 [WORKER] Ciclo terminado. Descansando 60 segundos para respetar cuota API...");
-        await delay(60000); 
-    }
-};
-
-// Arrancamos el worker en segundo plano
-iniciarWorkerLogistico();
-
-
-// =================================================================================================
-// 👇 EXPORTS DE ENDPOINTS ULTRA-RÁPIDOS (< 5ms)
-// =================================================================================================
-
-export const getSheetData = async (req, res) => {
-    try {
-        const { spreadsheetId, sheetName } = req.params;
-        const doc = await initGoogleSheets(spreadsheetId);
-        const sheet = doc.sheetsByTitle[sheetName];
-        if (!sheet) return res.status(404).json({ success: false, error: `La pestaña '${sheetName}' no existe.` });
-
-        const rows = await sheet.getRows();
-        const data = rows.map(row => [...(row._rawData || [])]);
-
-        res.status(200).json({ success: true, headers: sheet.headerValues || [], data: data });
-    } catch (error) {
-        console.error("❌ ERROR LEYENDO PESTAÑA:", error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-};
-
-export const getViajesIntegradosDia = async (req, res) => {
-    try {
-        const { spreadsheetId } = req.params;
-        const viajes = await obtenerViajesDePlanillaInterno(spreadsheetId);
-        res.status(200).json({ success: true, data: viajes });
-    } catch (error) {
-        console.error("❌ ERROR INTEGRANDO VIAJES INDIVIDUALES:", error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-};
-
-export const getViajesRecientesAgregados = async (req, res) => {
-    if (cacheViajesConsolidados.length === 0) {
-        return res.status(202).json({
-            success: true,
-            message: "Sincronizador inicializando caché en segundo plano.",
-            diasDisponibles: [],
-            data: []
-        });
-    }
-
-    res.status(200).json({
-        success: true,
-        diasDisponibles: cacheDiasDisponibles,
-        data: cacheViajesConsolidados,
-        cachedAt: lastSyncTime
-    });
-};
-
-export const writeTestLog = async (req, res) => {
-    res.status(200).json({ message: "Log guardado" });
-};
+                    colorHex
