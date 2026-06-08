@@ -287,4 +287,129 @@ const obtenerViajesDePlanillaInterno = async (spreadsheetId) => {
                     terminalOrigen: terminalLimpia,
                     fechaPlanificada: fechaLimpia,
                     cisternadoReal: cisternadoReal,
-                    colorHex
+                    colorHex: colorHexLegacy,
+                    isCompletado: isCompletado,
+                    paradas: paradas,
+                    numeroUt: numeroUt,
+                    semi: semi,
+                    chofer: chofer,
+                    ultimoTracking: ultimoTracking,
+                    colorHexA: colorHexA,
+                    colorHexHx: colorHexHx,
+                    nViaje: nViaje,
+                    llegadaPlanta: llegadaPlanta,
+                    horarioVacio: horarioVacio,
+                    estadoUt: estadoUt,
+                    cliente: destinoLimpio, // ALIMENTA EL DROPDOWN DE LA UI
+                    destinoAR: destinoLimpio // ALIMENTA EL TITULO DE LA TARJETA
+                });
+            }
+        }
+    }
+    return viajesFinales;
+};
+
+export const sincronizarDatosGoogleSheets = async () => {
+    try {
+        console.log("[BFF] 🔄 Iniciando ciclo de sincronización de Google Sheets...");
+        
+        const docMaster = await initGoogleSheets(masterIndexSheetId);
+        const sheetIndice = docMaster.sheetsByTitle['Indice'];
+        
+        if (!sheetIndice) return;
+
+        const rowsIndice = await sheetIndice.getRows();
+        
+        const parseFecha = (str) => {
+            try {
+                const parts = str.split("/");
+                if (parts.length === 3) {
+                    const d = parts[0].padStart(2, '0');
+                    const m = parts[1].padStart(2, '0');
+                    const y = parts[2].split(" ")[0].trim();
+                    return parseInt(`${y}${m}${d}`, 10);
+                }
+            } catch (e) {}
+            return 0;
+        };
+
+        const listaDiasCompleta = rowsIndice.map(row => {
+            const vals = row._rawData || [];
+            return { fecha: vals[0] || "Sin fecha", sheetId: vals[1] || "" };
+        }).filter(d => d.sheetId.trim().length > 0).sort((a, b) => parseFecha(b.fecha) - parseFecha(a.fecha));
+
+        const resultados = [];
+        for (let j = 0; j < Math.min(listaDiasCompleta.length, 10); j++) {
+            try {
+                resultados.push(await obtenerViajesDePlanillaInterno(listaDiasCompleta[j].sheetId));
+                await delay(1500); 
+            } catch (err) {}
+        }
+
+        const todosLosViajes = resultados.flat();
+        const vistos = new Set();
+        const viajesConsolidados = [];
+        for (const v of todosLosViajes) {
+            if (!vistos.has(v.idUnico)) {
+                vistos.add(v.idUnico);
+                viajesConsolidados.push(v);
+            }
+        }
+        
+        viajesConsolidados.sort((a, b) => parseFecha(b.fechaPlanificada) - parseFecha(a.fechaPlanificada));
+
+        if (cacheViajesConsolidados.length > 0 && firebaseInitialized) {
+            for (const nuevo of viajesConsolidados) {
+                const viejo = cacheViajesConsolidados.find(v => v.idUnico === nuevo.idUnico);
+                if (viejo && ((viejo.horarioVacio !== nuevo.horarioVacio) || (viejo.estadoUt !== nuevo.estadoUt)) && nuevo.numeroUt) {
+                    enviarNotificacionPushUT(nuevo);
+                }
+            }
+        }
+
+        cacheViajesConsolidados = viajesConsolidados;
+        cacheDiasDisponibles = listaDiasCompleta.slice(0, 10);
+        lastSyncTime = new Date();
+
+        console.log(`[BFF CACHE] ✅ Sincronización finalizada: ${cacheViajesConsolidados.length} viajes.`);
+    } catch (error) {
+        console.error("❌ ERROR CRÍTICO EN BFF:", error.message);
+    }
+};
+
+const iniciarWorkerLogistico = async () => {
+    await delay(3000); 
+    while (true) {
+        await sincronizarDatosGoogleSheets();
+        await delay(60000); 
+    }
+};
+
+iniciarWorkerLogistico();
+
+export const getSheetData = async (req, res) => {
+    try {
+        const { spreadsheetId, sheetName } = req.params;
+        const doc = await initGoogleSheets(spreadsheetId);
+        const sheet = doc.sheetsByTitle[sheetName];
+        if (!sheet) return res.status(404).json({ success: false });
+
+        const rows = await sheet.getRows();
+        res.status(200).json({ success: true, headers: sheet.headerValues || [], data: rows.map(r => [...(r._rawData || [])]) });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+export const getViajesIntegradosDia = async (req, res) => {
+    try {
+        res.status(200).json({ success: true, data: await obtenerViajesDePlanillaInterno(req.params.spreadsheetId) });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+export const getViajesRecientesAgregados = async (req, res) => {
+    if (cacheViajesConsolidados.length === 0) return res.status(202).json({ success: true, data: [] });
+    res.status(200).json({ success: true, diasDisponibles: cacheDiasDisponibles, data: cacheViajesConsolidados });
+};
